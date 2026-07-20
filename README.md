@@ -18,6 +18,8 @@
 
 Bu repository, **Akıllı Duygu ve Odak Günlüğü (Smart Emotion & Focus Journal)** projesinin Go ile geliştirilmiş REST API iskeletini içermektedir. Proje, MasterFabric Academy staj şartnamesine uygun şekilde Clean Architecture prensipleriyle yapılandırılmıştır.
 
+**Canlı API Adresi**: [https://smart-emotion-focus-journal-backend.onrender.com](https://smart-emotion-focus-journal-backend.onrender.com)
+
 ## Kullanılan Teknolojiler
 - **Programlama Dili**: Go (Golang)
 - **Web Framework**: Gin Gonic
