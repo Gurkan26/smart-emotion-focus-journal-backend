@@ -16,8 +16,9 @@
 
 # Smart Emotion & Focus Journal - Backend API
 
-This repository contains the Go-based REST API for the **Smart Emotion & Focus Journal** project. The backend is structured using Clean Architecture principles, matching the specifications of the MasterFabric Academy development curriculum.
+This repository contains the Go-based REST API for the **Smart Emotion & Focus Journal** project. The backend is structured using Clean Architecture principles and configured as the official Go module: **`github.com/gurkanfikretgunak/masterfabric-go`**.
 
+**GitHub Module Repository**: [https://github.com/gurkanfikretgunak/masterfabric-go](https://github.com/gurkanfikretgunak/masterfabric-go)  
 **Live Backend API**: [https://smart-emotion-focus-journal-backend.onrender.com](https://smart-emotion-focus-journal-backend.onrender.com)  
 **Vercel Frontend Live Demo**: [https://smart-emotion-focus-journal-fronten.vercel.app/auth](https://smart-emotion-focus-journal-fronten.vercel.app/auth)
 

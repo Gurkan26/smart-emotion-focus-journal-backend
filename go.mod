@@ -1,4 +1,4 @@
-module backend
+module github.com/gurkanfikretgunak/masterfabric-go
 
 go 1.26.5
 

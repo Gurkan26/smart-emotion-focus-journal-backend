@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"os"
 
-	"backend/config"
-	"backend/models"
-	"backend/routes"
+	"github.com/gurkanfikretgunak/masterfabric-go/config"
+	"github.com/gurkanfikretgunak/masterfabric-go/models"
+	"github.com/gurkanfikretgunak/masterfabric-go/routes"
 
 	"github.com/gin-gonic/gin"
 )

@@ -1,8 +1,8 @@
 package controllers
 
 import (
-	"backend/config"
-	"backend/models"
+	"github.com/gurkanfikretgunak/masterfabric-go/config"
+	"github.com/gurkanfikretgunak/masterfabric-go/models"
 	"net/http"
 	"regexp"
 	"strconv"

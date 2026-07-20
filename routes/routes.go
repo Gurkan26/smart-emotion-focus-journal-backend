@@ -1,7 +1,7 @@
 package routes
 
 import (
-	"backend/controllers"
+	"github.com/gurkanfikretgunak/masterfabric-go/controllers"
 
 	"github.com/gin-gonic/gin"
 )
