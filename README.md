@@ -14,82 +14,90 @@
 
 </div>
 
-# Akıllı Duygu ve Odak Günlüğü - Backend API
+# Smart Emotion & Focus Journal - Backend API
 
-Bu repository, **Akıllı Duygu ve Odak Günlüğü (Smart Emotion & Focus Journal)** projesinin Go ile geliştirilmiş REST API iskeletini içermektedir. Proje, MasterFabric Academy staj şartnamesine uygun şekilde Clean Architecture prensipleriyle yapılandırılmıştır.
+This repository contains the Go-based REST API for the **Smart Emotion & Focus Journal** project. The backend is structured using Clean Architecture principles, matching the specifications of the MasterFabric Academy development curriculum.
 
-**Canlı API Adresi**: [https://smart-emotion-focus-journal-backend.onrender.com](https://smart-emotion-focus-journal-backend.onrender.com)
+**Live Backend API**: [https://smart-emotion-focus-journal-backend.onrender.com](https://smart-emotion-focus-journal-backend.onrender.com)  
+**Vercel Frontend Live Demo**: [https://smart-emotion-focus-journal-fronten.vercel.app/auth](https://smart-emotion-focus-journal-fronten.vercel.app/auth)
 
-## Kullanılan Teknolojiler
-- **Programlama Dili**: Go (Golang)
+## 🛠️ Technology Stack
+- **Language**: Go (Golang)
 - **Web Framework**: Gin Gonic
-- **Veritabanı ORM**: GORM
-- **Veritabanı Sürücüsü**: PostgreSQL Driver (pgx)
+- **Database ORM**: GORM
+- **Database Driver**: PostgreSQL Driver (pgx)
+- **Security**: Bcrypt password hashing
 
 ---
 
-## Proje Klasör Yapısı (Clean Architecture)
-Proje, bağımlılıkların yönetilebilirliği ve test edilebilirlik için katmanlı mimariye uygun tasarlanmıştır:
-- `config/`: Veritabanı ve genel uygulama konfigürasyonu.
-- `models/`: Veritabanı tablolarına karşılık gelen GORM struct tanımları.
-- `controllers/`: İstekleri karşılayan ve yanıtları dönen business logic / mock handler'lar.
-- `routes/`: API rotalarının tanımlandığı ve controller fonksiyonlarıyla eşleştirildiği katman.
-- `main.go`: Uygulamanın giriş noktası, middleware yapılandırmaları ve HTTP sunucusunun başlatıldığı yer.
+## 📂 Project Structure (Clean Architecture)
+The project layers separate concerns to ensure testing simplicity and dependency control:
+- `config/`: Database initializers and environment configuration.
+- `models/`: GORM struct models representing the database tables.
+- `controllers/`: Handles business logic, input bindings, error logging, and database operations. Includes thread-safe in-memory maps/slices as fallbacks.
+- `routes/`: Registers routes and maps them to their respective controllers.
+- `main.go`: Application entry point setting up CORS middleware, auto-migrations, and serving the HTTP server.
 
 ---
 
-## Veritabanı Modelleri
-Projede 4 ana tablo bulunmaktadır:
-1. **User**: Kullanıcı hesabı bilgileri (E-posta, şifre hash'i).
-2. **UserConfig**: Temalar ve bildirim tercihleri gibi kullanıcı ayarları.
-3. **Journal**: Kullanıcı günlük yazıları ve LLM tarafından analiz edilen karar verimliliği / duygu skorları (`DecisionScore`).
-4. **LlmMetric**: LLM API çağrılarının izleme verileri (gecikme süreleri, token sayıları ve hata kayıtları).
+## 💾 Database Schema
+The GORM database contains 4 main tables:
+1. **User**: Credentials data, mapping emails to hashed password values.
+2. **UserConfig**: App settings including dashboard themes and notifications.
+3. **Journal**: User reflections and parsed decision scores (`DecisionScore`) computed from local AI analysis.
+4. **LlmMetric**: Performance tracking metrics mapping latency times, token volumes, and raw model output.
 
 ---
 
-## Tanımlı Rotalar (20 Endpoints)
+## 📡 Registered Routes (21 Endpoints)
 
-API, toplam 20 adet endpoint barındırmaktadır:
+The API supports 21 endpoints to handle authentication, telemetry logs, and configuration:
 
-### 1. Auth Rotaları (8)
-- `POST /register` - Kullanıcı kaydı
-- `POST /login` - Kullanıcı girişi
-- `POST /logout` - Güvenli çıkış
-- `POST /refresh` - JWT yenileme token talebi
-- `GET /profile` - Profil bilgilerini getirme
-- `PUT /profile` - Profil bilgilerini güncelleme
-- `PUT /password` - Şifre değiştirme
-- `DELETE /delete` - Hesap silme
+### 1. Root Route (1)
+- `GET /` - Root status check (Operational API metadata metadata)
 
-### 2. Config Rotaları (2)
-- `GET /config` - Kullanıcı uygulama ayarlarını getirme
-- `PUT /config` - Kullanıcı uygulama ayarlarını güncelleme
+### 2. Auth Routes (8)
+- `POST /register` - Register new user credentials (saves password hashed with Bcrypt)
+- `POST /login` - Login check (returns a secure random session token)
+- `POST /logout` - Terminates active session tokens
+- `POST /refresh` - Refreshes token strings
+- `GET /profile` - Retrieve profile information
+- `PUT /profile` - Update profile information
+- `PUT /password` - Modify active passwords
+- `DELETE /delete` - Remove user profiles
 
-### 3. Web MLC-LLM / Analiz Rotaları (7)
-- `POST /api/journal` - Yeni günlük girdisi ekleme (ve LLM analizi)
-- `GET /api/journal` - Günlük geçmişini listeleme
-- `POST /api/monitor/metrics` - LLM performans metriklerini kaydetme
-- `GET /api/monitor/metrics` - Kayıtlı metrikleri listeleme
-- `GET /api/monitor/scores` - Duygu/Karar skor istatistiklerini getirme
-- `POST /api/monitor/error` - LLM hata logu ekleme
-- `DELETE /api/monitor/clear` - LLM metriklerini temizleme
+### 3. Config Routes (2)
+- `GET /config` - Retrieve user preferences (theme, notification status)
+- `PUT /config` - Update config preferences
 
-### 4. Ortak Rotaları (3)
-- `GET /health` - Sağlık kontrolü (Health Check)
-- `GET /version` - Uygulama versiyon bilgisi
-- `POST /feedback` - Kullanıcı geri bildirimi gönderme
+### 4. Web MLC-LLM / Inference Routes (7)
+- `POST /api/journal` - Create a new journal entry and sync decision score
+- `GET /api/journal` - Query journal logs list
+- `POST /api/monitor/metrics` - Log run latency, tokens, and decision scores
+- `GET /api/monitor/metrics` - Retrieve list of metrics logs for SVG charts
+- `GET /api/monitor/scores` - Fetch cognitive load statistics summaries
+- `POST /api/monitor/error` - Log inference runtime errors
+- `DELETE /api/monitor/clear` - Wipe metric tables for the user
+
+### 5. Common Routes (3)
+- `GET /health` - Health check (returns 200 operational message)
+- `GET /version` - App release version info
+- `POST /feedback` - Submit user feedback logs
 
 ---
 
-## Kurulum ve Çalıştırma
+## 🚀 Installation and Run
 
-### Bağımlılıkları Yükleme
+### 1. Download Dependencies
 ```bash
 go mod download
 ```
 
-### Sunucuyu Başlatma
+### 2. Start the Server Locally
 ```bash
 go run main.go
 ```
-Sunucu varsayılan olarak `http://localhost:8080` adresinde ayağa kalkacaktır. CORS yapılandırması Next.js veya diğer frontend uygulamalarının erişebileceği şekilde entegre edilmiştir.
+The server will start by default on `http://localhost:8080`. 
+
+> [!NOTE]
+> **Database Fallback Mode**: If no local PostgreSQL database is running, the server logs a warning and automatically falls back to thread-safe **In-Memory Storage**. All auth registrations, logins, journals, and metrics will work perfectly in-memory during local frontend testing.
