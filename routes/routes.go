@@ -8,6 +8,9 @@ import (
 
 // SetupRoutes registers all 20 required API endpoints with the Gin engine
 func SetupRoutes(r *gin.Engine) {
+	// Root Route (prevents 404)
+	r.GET("/", controllers.RootIndex)
+
 	// Auth (8 Endpoints)
 	r.POST("/register", controllers.Register)
 	r.POST("/login", controllers.Login)
