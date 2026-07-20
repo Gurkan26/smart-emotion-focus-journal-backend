@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 
 	"backend/config"
 	"backend/models"
@@ -59,9 +60,13 @@ func main() {
 	routes.SetupRoutes(r)
 
 	// Start Server
-	port := ":8080"
-	log.Printf("Server is running on port %s", port)
-	if err := r.Run(port); err != nil {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	addr := ":" + port
+	log.Printf("Server is running on port %s", addr)
+	if err := r.Run(addr); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
 	}
 }
