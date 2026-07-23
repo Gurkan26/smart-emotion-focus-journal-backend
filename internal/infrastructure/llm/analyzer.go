@@ -44,7 +44,7 @@ func NewAnalyzer() *Analyzer {
 	apiKey := os.Getenv("LLM_API_KEY")
 	model := os.Getenv("LLM_MODEL")
 	if model == "" {
-		model = "gemma:2b"
+		model = "HF://mlc-ai/gemma-2b-it-q4f16_1-MLC"
 	}
 
 	return &Analyzer{
@@ -58,7 +58,7 @@ func NewAnalyzer() *Analyzer {
 func (a *Analyzer) Analyze(ctx context.Context, content string) (*AnalysisResult, error) {
 	startTime := time.Now()
 
-	// If external LLM API is configured, try calling OpenAI/Ollama API
+	// If external LLM API is configured, try calling OpenAI/MLC LLM API
 	if a.apiBase != "" {
 		res, err := a.callExternalLLM(ctx, content, startTime)
 		if err == nil && res != nil {

@@ -1,4 +1,4 @@
-# Full enterprise stack: Backend + Postgres + Redis + Kafka + Ollama (Containerized LLM) + Prometheus + Grafana
+# Full enterprise stack: Backend + Postgres + Redis + Kafka + MLC LLM (Containerized LLM) + Prometheus + Grafana
 services:
   backend:
     build:
@@ -14,23 +14,25 @@ services:
       - DB_USER=masterfabric
       - DB_PASSWORD=masterfabric
       - DB_NAME=masterfabric
-      - REDIS_HOST=redis:6379
+      - REDIS_HOST=redis
       - KAFKA_BROKERS=kafka:29092
-      - LLM_API_BASE=http://ollama:11434/v1
-      - LLM_MODEL=gemma:2b
+      - LLM_API_BASE=http://mlc-llm:8000/v1
+      - LLM_MODEL=HF://mlc-ai/gemma-2b-it-q4f16_1-MLC
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: masterfabric-ollama
+  mlc-llm:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.mlc
+    container_name: masterfabric-mlc-llm
     ports:
-      - "11434:11434"
+      - "8000:8000"
     volumes:
-      - ollamadata:/root/.ollama
+      - mlcdata:/root/.cache/mlc_llm
 
   prometheus:
     image: prom/prometheus:latest
@@ -129,5 +131,5 @@ volumes:
   pgdata:
   redisdata:
   kafkadata:
-  ollamadata:
+  mlcdata:
   grafanadata:
