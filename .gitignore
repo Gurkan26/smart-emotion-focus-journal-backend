@@ -1,36 +1,45 @@
-# Binaries for programs and plugins
+# Binaries
+bin/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# Test binary
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of go coverage
 *.out
+coverage.html
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
+# Go workspace
 go.work
 go.work.sum
 
-# Env files
-.env
-.env.*
-!.env.example
-
-# IDEs
+# IDE
 .idea/
 .vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Vendor (optional)
+# vendor/
+
+# Build output
+dist/
+tmp/
+.tmp/
+
+# Air hot-reload
+bin/air
