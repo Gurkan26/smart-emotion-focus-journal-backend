@@ -96,7 +96,7 @@ type chatCompletionResponse struct {
 
 func (a *Analyzer) callExternalLLM(ctx context.Context, content string, startTime time.Time) (*AnalysisResult, error) {
 	url := fmt.Sprintf("%s/chat/completions", a.apiBase)
-	sysPrompt := "You are an emotional state analysis assistant. Read the user's text and only return a Decision Score in this format: 'Cognitive Load Score: %X - [One sentence advice]'. Do not include any other conversational filler."
+	sysPrompt := "You are an emotional state analysis assistant. Always respond strictly in English regardless of the input text language. Read the user's text and only return a Decision Score in this format: 'Cognitive Load Score: %X - [One sentence advice in English]'. Do not include any other conversational filler."
 
 	reqBody := chatCompletionRequest{
 		Model: a.model,
@@ -205,11 +205,11 @@ func (a *Analyzer) analyzeFallback(content string, startTime time.Time) *Analysi
 
 	var suggestion string
 	if score > 75 {
-		suggestion = "Yüksek zihinsel yük tespit edildi. Derin bir nefes alıp 15 dakika ara vermeniz tavsiye edilir."
+		suggestion = "High cognitive load detected. Taking a deep breath and a 15-minute break is recommended."
 	} else if score > 45 {
-		suggestion = "Zihinsel yoğunluğunuz orta düzeyde. Çalışma aralarına kısa molalar ekleyerek odağınızı koruyabilirsiniz."
+		suggestion = "Your mental workload is moderate. Adding short breaks between work sessions will help maintain your focus."
 	} else {
-		suggestion = "Zihinsel durumunuz oldukça dengeli ve dingin. Çalışmaya mevcut temponuzla devam edebilirsiniz."
+		suggestion = "Your mental state is well-balanced and calm. You can continue working at your current pace."
 	}
 
 	replyText := fmt.Sprintf("Cognitive Load Score: %d%% - %s", int(score), suggestion)
