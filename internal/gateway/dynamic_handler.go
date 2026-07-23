@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,37 +23,64 @@ import (
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/shared/middleware"
 )
 
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+func sanitizeIdentifier(name string) (string, error) {
+	if !validIdentifier.MatchString(name) {
+		return "", fmt.Errorf("invalid identifier name: %s", name)
+	}
+	return pgx.Identifier{name}.Sanitize(), nil
+}
+
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return nil, fmt.Errorf("SSRF blocked: request to internal IP address %s is prohibited", ip.String())
+		}
+	}
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, network, addr)
+}
+
 // DynamicHandlerResolver resolves handlers dynamically based on endpoint configuration.
-// It supports multiple strategies:
-// 1. Registered handlers (if service is registered)
-// 2. HTTP proxy to external services (if backend_service is a URL)
-// 3. Generic dynamic database handler (automatically performs CRUD operations)
 type DynamicHandlerResolver struct {
 	registry      *BackendRegistry
 	httpClient    *http.Client
 	logger        *slog.Logger
 	db            *pgxpool.Pool
-	serviceConfig map[string]ServiceConfig // Maps service name to configuration
+	serviceConfig map[string]ServiceConfig
 }
 
 // ServiceConfig holds configuration for a backend service.
 type ServiceConfig struct {
-	BaseURL string            `json:"base_url,omitempty"` // For HTTP proxy
-	Headers map[string]string `json:"headers,omitempty"`  // Default headers to add
-	Timeout int               `json:"timeout,omitempty"`  // Request timeout in seconds
+	BaseURL string            `json:"base_url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Timeout int               `json:"timeout,omitempty"`
 }
 
 const maxProxyResponseBytes = 1 << 20 // 1 MiB
 
-// NewDynamicHandlerResolver creates a new dynamic handler resolver.
+// NewDynamicHandlerResolver creates a new dynamic handler resolver with SSRF protection.
 func NewDynamicHandlerResolver(registry *BackendRegistry, logger *slog.Logger, db *pgxpool.Pool) *DynamicHandlerResolver {
 	if registry == nil {
 		registry = NewBackendRegistry()
 	}
+	tr := &http.Transport{
+		DialContext: safeDialContext,
+	}
 	return &DynamicHandlerResolver{
 		registry: registry,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: tr,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -203,30 +232,35 @@ func (r *DynamicHandlerResolver) buildTargetURL(baseURL string, endpoint *model.
 // Examples: "order-service" -> "orders", "product-service" -> "products"
 // Also checks Schema JSON for optional "table_name" metadata.
 func (r *DynamicHandlerResolver) deriveTableName(endpoint *model.Endpoint) string {
-	// First, check if table_name is specified in Schema metadata
+	raw := ""
 	if len(endpoint.Schema) > 0 {
 		var schemaData map[string]interface{}
 		if err := json.Unmarshal(endpoint.Schema, &schemaData); err == nil {
 			if tableName, ok := schemaData["table_name"].(string); ok && tableName != "" {
-				return tableName
+				raw = tableName
 			}
 		}
 	}
 
-	// Derive from backend_service name dynamically
-	serviceName := endpoint.BackendService
-	
-	// Remove common suffixes: "-service", "-api", "-handler"
-	serviceName = strings.TrimSuffix(serviceName, "-service")
-	serviceName = strings.TrimSuffix(serviceName, "-api")
-	serviceName = strings.TrimSuffix(serviceName, "-handler")
-	
-	// Simple pluralization: add 's' if not ending in 's'
-	if !strings.HasSuffix(serviceName, "s") {
-		serviceName = serviceName + "s"
+	if raw == "" {
+		serviceName := endpoint.BackendService
+		serviceName = strings.TrimSuffix(serviceName, "-service")
+		serviceName = strings.TrimSuffix(serviceName, "-api")
+		serviceName = strings.TrimSuffix(serviceName, "-handler")
+		if !strings.HasSuffix(serviceName, "s") {
+			serviceName = serviceName + "s"
+		}
+		raw = serviceName
 	}
-	
-	return serviceName
+
+	sanitized, err := sanitizeIdentifier(raw)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Error("unsafe table name identifier rejected", "raw_table", raw, "error", err)
+		}
+		return ""
+	}
+	return sanitized
 }
 
 // handleGeneric handles requests using automatic database operations.
@@ -415,7 +449,11 @@ func (r *DynamicHandlerResolver) handleCreate(ctx context.Context, tableName str
 
 	for key, value := range input {
 		if key != "id" && key != "organization_id" && key != "app_id" && key != "created_at" && key != "updated_at" {
-			columns = append(columns, key)
+			sanKey, err := sanitizeIdentifier(key)
+			if err != nil {
+				return nil, 0, fmt.Errorf("invalid column key: %w", err)
+			}
+			columns = append(columns, sanKey)
 			values = append(values, value)
 			placeholders = append(placeholders, fmt.Sprintf("$%d", paramIndex))
 			paramIndex++
@@ -458,7 +496,11 @@ func (r *DynamicHandlerResolver) handleUpdate(ctx context.Context, tableName str
 
 	for key, value := range input {
 		if key != "id" && key != "organization_id" && key != "app_id" && key != "created_at" && key != "updated_at" {
-			setParts = append(setParts, fmt.Sprintf("%s = $%d", key, paramIndex))
+			sanKey, err := sanitizeIdentifier(key)
+			if err != nil {
+				return nil, 0, fmt.Errorf("invalid column key: %w", err)
+			}
+			setParts = append(setParts, fmt.Sprintf("%s = $%d", sanKey, paramIndex))
 			values = append(values, value)
 			paramIndex++
 		}

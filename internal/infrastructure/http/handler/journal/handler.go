@@ -117,25 +117,25 @@ func generateSessionToken() string {
 	return hex.EncodeToString(b)
 }
 
-func (h *Handler) getUserIDFromRequest(r *http.Request) uint {
+func (h *Handler) getUserIDFromRequest(r *http.Request) (uint, bool) {
 	authHeader := r.Header.Get("Authorization")
-	if len(authHeader) >= 8 && authHeader[:7] == "Bearer " {
+	if len(authHeader) >= 8 && strings.HasPrefix(authHeader, "Bearer ") {
 		token := authHeader[7:]
 		if h.db != nil {
 			var userID uint
 			err := h.db.QueryRow(r.Context(), `SELECT user_id FROM active_sessions WHERE token = $1`, token).Scan(&userID)
 			if err == nil && userID > 0 {
-				return userID
+				return userID, true
 			}
 		}
 		ActiveSessionsMu.RLock()
 		userID, ok := ActiveSessions[token]
 		ActiveSessionsMu.RUnlock()
-		if ok {
-			return userID
+		if ok && userID > 0 {
+			return userID, true
 		}
 	}
-	return 1 // Default demo user ID
+	return 0, false
 }
 
 func sendError(w http.ResponseWriter, status int, codeStr, msg string) {
@@ -575,13 +575,18 @@ type AnalyzeInput struct {
 }
 
 func (h *Handler) AnalyzeJournal(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
+
 	var input AnalyzeInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.Content) == "" {
 		sendError(w, http.StatusBadRequest, "INVALID_INPUT", "Journal content is required for analysis")
 		return
 	}
-
-	userID := h.getUserIDFromRequest(r)
 
 	result, err := h.analyzer.Analyze(r.Context(), input.Content)
 	if err != nil {
@@ -621,13 +626,18 @@ type JournalInput struct {
 }
 
 func (h *Handler) CreateJournal(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
+
 	var input JournalInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Content == "" {
 		sendError(w, http.StatusBadRequest, "INVALID_INPUT", "Invalid input fields")
 		return
 	}
-
-	userID := h.getUserIDFromRequest(r)
 
 	decisionScore := 50.0
 	re := regexp.MustCompile(`Cognitive\s+Load\s+Score:\s*(\d+)`)
@@ -678,7 +688,11 @@ func (h *Handler) CreateJournal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetJournals(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	if h.db != nil {
 		rows, err := h.db.Query(r.Context(),
@@ -720,13 +734,18 @@ type MetricInput struct {
 }
 
 func (h *Handler) CreateMetric(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
+
 	var input MetricInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		sendError(w, http.StatusBadRequest, "INVALID_INPUT", "Invalid metrics format")
 		return
 	}
-
-	userID := h.getUserIDFromRequest(r)
 
 	now := time.Now()
 	metric := entity.LlmMetric{
@@ -760,7 +779,11 @@ func (h *Handler) CreateMetric(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	if h.db != nil {
 		rows, err := h.db.Query(r.Context(),
@@ -796,7 +819,11 @@ func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetScores(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	if h.db != nil {
 		var avg float64
@@ -839,7 +866,11 @@ func (h *Handler) CreateErrorLog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ClearMetrics(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	if h.db != nil {
 		_, _ = h.db.Exec(r.Context(), `DELETE FROM llm_metrics WHERE user_id = $1`, userID)

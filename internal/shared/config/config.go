@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -101,6 +103,16 @@ type LogConfig struct {
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" || jwtSecret == "change-me-in-production" {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err == nil {
+			jwtSecret = hex.EncodeToString(b)
+		} else {
+			jwtSecret = "change-me-in-production-secure-fallback"
+		}
+	}
+
 	return &Config{
 		Server: ServerConfig{
 			Host:               envOrDefault("SERVER_HOST", "0.0.0.0"),
@@ -128,7 +140,7 @@ func Load() *Config {
 			DB:       envOrDefaultInt("REDIS_DB", 0),
 		},
 		JWT: JWTConfig{
-			Secret:          envOrDefault("JWT_SECRET", "change-me-in-production"),
+			Secret:          jwtSecret,
 			ExpirationHours: envOrDefaultInt("JWT_EXPIRATION_HOURS", 24),
 			Issuer:          envOrDefault("JWT_ISSUER", "masterfabric"),
 		},
