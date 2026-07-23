@@ -68,15 +68,35 @@ func (b *InProcessBus) Close() error {
 
 func (b *InProcessBus) dispatch() {
 	defer close(b.done)
+	// Bounded worker pool semaphore (up to 32 concurrent event handlers)
+	sem := make(chan struct{}, 32)
+	var wg sync.WaitGroup
+
 	for env := range b.ch {
 		b.mu.RLock()
-		handlers := b.handlers[env.topic]
+		handlers := append([]Handler(nil), b.handlers[env.topic]...)
 		b.mu.RUnlock()
 
+		if len(handlers) == 0 {
+			continue
+		}
+
+		// Decouple handler execution context from HTTP request cancellation
+		asyncCtx := context.WithoutCancel(env.ctx)
+
 		for _, h := range handlers {
-			if err := h(env.ctx, env.event); err != nil {
-				b.logger.Error("in-process handler error", "topic", env.topic, "error", err)
-			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(handler Handler, ctx context.Context, evt Event, topic string) {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				if err := handler(ctx, evt); err != nil {
+					b.logger.Error("in-process handler error", "topic", topic, "error", err)
+				}
+			}(h, asyncCtx, env.event, env.topic)
 		}
 	}
+	wg.Wait()
 }

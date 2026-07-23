@@ -11,6 +11,8 @@ import (
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/shared/response"
 )
 
+type authCtxKey struct{}
+
 type contextKey string
 
 const (
@@ -21,7 +23,15 @@ const (
 	ContextKeyClaims         contextKey = "auth_claims"
 )
 
-// JWTAuth is middleware that validates JWT tokens and injects claims into context.
+// AuthUser represents the authenticated user's context payload.
+type AuthUser struct {
+	UserID         uuid.UUID
+	Email          string
+	OrganizationID uuid.UUID
+	Permissions    []string
+}
+
+// JWTAuth is middleware that validates JWT tokens and injects user identity into context with a single allocation.
 func JWTAuth(authService service.AuthService) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,15 +53,17 @@ func JWTAuth(authService service.AuthService) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Inject claims into context
-			ctx := r.Context()
-			ctx = context.WithValue(ctx, ContextKeyClaims, claims)
-			ctx = context.WithValue(ctx, ContextKeyUserID, claims.UserID)
-			ctx = context.WithValue(ctx, ContextKeyEmail, claims.Email)
-			ctx = context.WithValue(ctx, ContextKeyOrganizationID, claims.OrganizationID)
-			ctx = context.WithValue(ctx, ContextKeyPermissions, claims.Permissions)
+			user := AuthUser{
+				UserID:         claims.UserID,
+				Email:          claims.Email,
+				OrganizationID: claims.OrganizationID,
+				Permissions:    claims.Permissions,
+			}
 
-			// Also populate logger context
+			// Single context value node to eliminate 5x linked-list context traversal cost
+			ctx := context.WithValue(r.Context(), authCtxKey{}, user)
+
+			// Populate logger context
 			ctx = logger.ContextWithUserID(ctx, claims.UserID.String())
 			if claims.OrganizationID != uuid.Nil {
 				ctx = logger.ContextWithOrganizationID(ctx, claims.OrganizationID.String())
@@ -66,13 +78,13 @@ func JWTAuth(authService service.AuthService) func(http.Handler) http.Handler {
 func RequirePermission(rbac service.RBACService, permission string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			userID, ok := r.Context().Value(ContextKeyUserID).(uuid.UUID)
+			userID, ok := UserIDFromContext(r.Context())
 			if !ok {
 				response.JSON(w, http.StatusUnauthorized, map[string]string{"error": "user not authenticated"})
 				return
 			}
 
-			orgID, _ := r.Context().Value(ContextKeyOrganizationID).(uuid.UUID)
+			orgID, _ := OrgIDFromContext(r.Context())
 
 			has, err := rbac.HasPermission(r.Context(), userID, orgID, permission)
 			if err != nil {
@@ -91,12 +103,18 @@ func RequirePermission(rbac service.RBACService, permission string) func(http.Ha
 
 // UserIDFromContext extracts the authenticated user ID from the context.
 func UserIDFromContext(ctx context.Context) (uuid.UUID, bool) {
+	if user, ok := ctx.Value(authCtxKey{}).(AuthUser); ok {
+		return user.UserID, true
+	}
 	id, ok := ctx.Value(ContextKeyUserID).(uuid.UUID)
 	return id, ok
 }
 
 // OrgIDFromContext extracts the organization ID from the context.
 func OrgIDFromContext(ctx context.Context) (uuid.UUID, bool) {
+	if user, ok := ctx.Value(authCtxKey{}).(AuthUser); ok {
+		return user.OrganizationID, true
+	}
 	id, ok := ctx.Value(ContextKeyOrganizationID).(uuid.UUID)
 	return id, ok
 }

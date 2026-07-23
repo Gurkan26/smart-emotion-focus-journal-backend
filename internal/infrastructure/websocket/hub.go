@@ -18,6 +18,7 @@ type Hub struct {
 	mu             sync.RWMutex
 	clients        map[string]*client
 	rooms          map[model.RoomKey]map[string]*client
+	orgRooms       map[uuid.UUID]map[model.RoomKey]struct{}
 	closed         bool
 }
 
@@ -31,6 +32,7 @@ func NewHub(logger *slog.Logger, maxConnections int) *Hub {
 		maxConnections: maxConnections,
 		clients:        make(map[string]*client),
 		rooms:          make(map[model.RoomKey]map[string]*client),
+		orgRooms:       make(map[uuid.UUID]map[model.RoomKey]struct{}),
 	}
 }
 
@@ -126,11 +128,14 @@ func (h *Hub) BroadcastToOrganization(orgID uuid.UUID, channel string, payload [
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	prefix := "org:" + orgID.String() + ":app:"
+	orgMap, ok := h.orgRooms[orgID]
+	if !ok || h.closed {
+		return
+	}
+
 	suffix := ":channel:" + channel
-	for room := range h.rooms {
-		key := string(room)
-		if len(key) > len(prefix)+len(suffix) && key[:len(prefix)] == prefix && key[len(key)-len(suffix):] == suffix {
+	for room := range orgMap {
+		if strings.HasSuffix(string(room), suffix) {
 			h.broadcastLocked(room, payload)
 		}
 	}
@@ -173,6 +178,7 @@ func (h *Hub) Close(ctx context.Context) error {
 	}
 	h.clients = make(map[string]*client)
 	h.rooms = make(map[model.RoomKey]map[string]*client)
+	h.orgRooms = make(map[uuid.UUID]map[model.RoomKey]struct{})
 	return nil
 }
 
@@ -182,6 +188,13 @@ func (h *Hub) addToRoomLocked(c *client, room model.RoomKey) {
 	}
 	h.rooms[room][c.id] = c
 	c.subscribe(room)
+
+	if c.info.OrganizationID != uuid.Nil {
+		if h.orgRooms[c.info.OrganizationID] == nil {
+			h.orgRooms[c.info.OrganizationID] = make(map[model.RoomKey]struct{})
+		}
+		h.orgRooms[c.info.OrganizationID][room] = struct{}{}
+	}
 }
 
 func (h *Hub) removeFromRoomLocked(c *client, room model.RoomKey) {
@@ -189,6 +202,14 @@ func (h *Hub) removeFromRoomLocked(c *client, room model.RoomKey) {
 		delete(members, c.id)
 		if len(members) == 0 {
 			delete(h.rooms, room)
+			if c.info.OrganizationID != uuid.Nil {
+				if orgMap, found := h.orgRooms[c.info.OrganizationID]; found {
+					delete(orgMap, room)
+					if len(orgMap) == 0 {
+						delete(h.orgRooms, c.info.OrganizationID)
+					}
+				}
+			}
 		}
 	}
 	c.unsubscribe(room)
@@ -207,6 +228,14 @@ func (h *Hub) removeClient(c *client) {
 			delete(members, c.id)
 			if len(members) == 0 {
 				delete(h.rooms, room)
+				if c.info.OrganizationID != uuid.Nil {
+					if orgMap, found := h.orgRooms[c.info.OrganizationID]; found {
+						delete(orgMap, room)
+						if len(orgMap) == 0 {
+							delete(h.orgRooms, c.info.OrganizationID)
+						}
+					}
+				}
 			}
 		}
 	}

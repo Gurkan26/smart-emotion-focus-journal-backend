@@ -156,12 +156,14 @@ func (a *Analyzer) callExternalLLM(ctx context.Context, content string, startTim
 	return parseReplyToResult(content, rawReply, latencyMs, promptTokens, completionTokens, totalTokens), nil
 }
 
+var (
+	highStressKeywords = []string{"yorgun", "stres", "baskı", "burnout", "zor", "kaygı", "endişe", "ölüyorum", "bıktım", "sıkıldım", "kötü", "bozuk", "tire", "exhausted", "stress", "anxious", "overwhelmed"}
+	moderateKeywords   = []string{"yoğun", "çalışıyorum", "odak", "projeler", "ödev", "ders", "busy", "working", "focus", "deadline"}
+	calmKeywords       = []string{"huzurlu", "sakin", "iyi", "mutlu", "harika", "dinlenmiş", "rahat", "calm", "happy", "relaxed", "great", "peaceful"}
+)
+
 func (a *Analyzer) analyzeFallback(content string, startTime time.Time) *AnalysisResult {
 	lower := strings.ToLower(content)
-	
-	highStressKeywords := []string{"yorgun", "stres", "baskı", "burnout", "zor", "kaygı", "endişe", "ölüyorum", "bıktım", "sıkıldım", "kötü", "bozuk", "tire", "exhausted", "stress", "anxious", "overwhelmed"}
-	moderateKeywords := []string{"yoğun", "çalışıyorum", "odak", "projeler", "ödev", "ders", "busy", "working", "focus", "deadline"}
-	calmKeywords := []string{"huzurlu", "sakin", "iyi", "mutlu", "harika", "dinlenmiş", "rahat", "calm", "happy", "relaxed", "great", "peaceful"}
 
 	score := 50.0
 	highCount := 0

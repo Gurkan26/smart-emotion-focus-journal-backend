@@ -73,7 +73,10 @@ func run() error {
 		log.Warn("JWT_SECRET is unset; authentication uses a known default value")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
+	ctx, cancel := context.WithTimeout(rootCtx, 10*time.Second)
 	defer cancel()
 
 	// Initialize OpenTelemetry
@@ -106,7 +109,7 @@ func run() error {
 	}
 
 	// Initialize event bus (Kafka or in-process)
-	eventBus := initEventBus(ctx, cfg, log)
+	eventBus := initEventBus(rootCtx, cfg, log)
 	defer func() { _ = eventBus.Close() }()
 
 	// Build dependencies
@@ -185,8 +188,7 @@ func initEventBus(ctx context.Context, cfg *config.Config, log *slog.Logger) eve
 	kafkaBus := infraKafka.NewBus(cfg.Kafka.Brokers, cfg.Kafka.GroupID, log)
 
 	// Start consuming (after subscriptions are registered in buildDependencies)
-	// We start consumption with a background context so it outlives the startup ctx.
-	kafkaBus.Start(context.Background())
+	kafkaBus.Start(ctx)
 
 	log.Info("kafka event bus initialized")
 	return kafkaBus

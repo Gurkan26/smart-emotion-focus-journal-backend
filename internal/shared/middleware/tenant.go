@@ -43,7 +43,7 @@ func TenantResolverWithWorkspace(orgRepo tenantRepo.OrgRepository, workspaceRepo
 
 			// 2. Fall back to JWT claims (if auth middleware already ran)
 			if orgID == uuid.Nil {
-				if claimOrgID, ok := ctx.Value(ContextKeyOrganizationID).(uuid.UUID); ok && claimOrgID != uuid.Nil {
+				if claimOrgID, ok := OrgIDFromContext(ctx); ok && claimOrgID != uuid.Nil {
 					orgID = claimOrgID
 				}
 			}

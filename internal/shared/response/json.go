@@ -1,20 +1,40 @@
 package response
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	domainErr "github.com/gurkanfikretgunak/masterfabric-go/internal/shared/errors"
 )
 
-// JSON writes a JSON response with the given status code and payload.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return bytes.NewBuffer(make([]byte, 0, 512))
+	},
+}
+
+// JSON writes a JSON response with the given status code and payload using buffer pooling.
 func JSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if payload != nil {
-		_ = json.NewEncoder(w).Encode(payload)
+	if payload == nil {
+		w.WriteHeader(status)
+		return
 	}
+
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(status)
+	_, _ = w.Write(buf.Bytes())
 }
 
 // Error writes a JSON error response, mapping domain errors to HTTP codes.
