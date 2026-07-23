@@ -353,9 +353,9 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	oldToken := authHeader[7:]
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
 
-	if userID == 0 {
+	if !ok || userID == 0 {
 		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Token session not found")
 		return
 	}
@@ -376,7 +376,11 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	email := "demo@masterfabric.co"
 	createdAt := time.Now()
@@ -415,7 +419,11 @@ func (h *Handler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	authHeader := r.Header.Get("Authorization")
 	var token string
@@ -493,7 +501,11 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 // --- User Config Endpoints ---
 
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	if h.db != nil {
 		var cfg entity.UserConfig
@@ -513,10 +525,10 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	memConfigsMu.RLock()
-	userConfig, ok := memConfigs[userID]
+	userConfig, okConfig := memConfigs[userID]
 	memConfigsMu.RUnlock()
 
-	if !ok {
+	if !okConfig {
 		userConfig = entity.UserConfig{
 			UserID:        userID,
 			Theme:         "dark",
@@ -531,7 +543,11 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
-	userID := h.getUserIDFromRequest(r)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
 
 	type ConfigInput struct {
 		Theme         string `json:"theme"`
