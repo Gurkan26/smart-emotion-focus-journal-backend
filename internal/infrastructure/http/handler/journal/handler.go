@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/domain/journal/entity"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/llm"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/shared/response"
@@ -49,11 +51,63 @@ type UserRecord struct {
 
 type Handler struct {
 	analyzer *llm.Analyzer
+	db       *pgxpool.Pool
 }
 
-func NewHandler() *Handler {
-	return &Handler{
+func NewHandler(db *pgxpool.Pool) *Handler {
+	h := &Handler{
 		analyzer: llm.NewAnalyzer(),
+		db:       db,
+	}
+	if db != nil {
+		h.ensureTables(context.Background())
+	}
+	return h
+}
+
+func (h *Handler) ensureTables(ctx context.Context) {
+	queries := []string{
+		`CREATE TABLE IF NOT EXISTS journal_users (
+			id              BIGSERIAL PRIMARY KEY,
+			email           VARCHAR(255) NOT NULL UNIQUE,
+			password_hash   VARCHAR(255) NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);`,
+		`CREATE TABLE IF NOT EXISTS active_sessions (
+			token           VARCHAR(255) PRIMARY KEY,
+			user_id         BIGINT NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);`,
+		`CREATE TABLE IF NOT EXISTS journals (
+			id              BIGSERIAL PRIMARY KEY,
+			user_id         BIGINT NOT NULL,
+			content         TEXT NOT NULL,
+			decision_score  DOUBLE PRECISION NOT NULL DEFAULT 50.0,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);`,
+		`CREATE TABLE IF NOT EXISTS user_configs (
+			id              BIGSERIAL PRIMARY KEY,
+			user_id         BIGINT NOT NULL UNIQUE,
+			theme           VARCHAR(50) NOT NULL DEFAULT 'dark',
+			notifications   BOOLEAN NOT NULL DEFAULT true
+		);`,
+		`CREATE TABLE IF NOT EXISTS llm_metrics (
+			id              BIGSERIAL PRIMARY KEY,
+			user_id         BIGINT NOT NULL,
+			latency_ms      BIGINT NOT NULL DEFAULT 0,
+			token_count     INT NOT NULL DEFAULT 0,
+			error_log       TEXT DEFAULT '',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_journal_users_email ON journal_users(email);`,
+		`CREATE INDEX IF NOT EXISTS idx_journals_user_id ON journals(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_metrics_user_id ON llm_metrics(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_active_sessions_user_id ON active_sessions(user_id);`,
+	}
+	for _, q := range queries {
+		_, _ = h.db.Exec(ctx, q)
 	}
 }
 
@@ -63,10 +117,17 @@ func generateSessionToken() string {
 	return hex.EncodeToString(b)
 }
 
-func getUserIDFromRequest(r *http.Request) uint {
+func (h *Handler) getUserIDFromRequest(r *http.Request) uint {
 	authHeader := r.Header.Get("Authorization")
 	if len(authHeader) >= 8 && authHeader[:7] == "Bearer " {
 		token := authHeader[7:]
+		if h.db != nil {
+			var userID uint
+			err := h.db.QueryRow(r.Context(), `SELECT user_id FROM active_sessions WHERE token = $1`, token).Scan(&userID)
+			if err == nil && userID > 0 {
+				return userID
+			}
+		}
 		ActiveSessionsMu.RLock()
 		userID, ok := ActiveSessions[token]
 		ActiveSessionsMu.RUnlock()
@@ -149,23 +210,62 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	emailClean := strings.TrimSpace(strings.ToLower(input.Email))
+
+	if h.db != nil {
+		var exists bool
+		_ = h.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM journal_users WHERE email = $1)`, emailClean).Scan(&exists)
+		if exists {
+			sendError(w, http.StatusConflict, "EMAIL_EXISTS", "Email already in use")
+			return
+		}
+
+		var newID uint
+		err := h.db.QueryRow(r.Context(),
+			`INSERT INTO journal_users (email, password_hash, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) RETURNING id`,
+			emailClean, string(hashed)).Scan(&newID)
+		if err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to register user in database")
+			return
+		}
+
+		memUsersMu.Lock()
+		memUsers[emailClean] = UserRecord{
+			ID:           newID,
+			Email:        emailClean,
+			PasswordHash: string(hashed),
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		}
+		memUsersMu.Unlock()
+
+		response.JSON(w, http.StatusCreated, map[string]interface{}{
+			"message": "User registered successfully",
+			"user": map[string]interface{}{
+				"id":    newID,
+				"email": emailClean,
+			},
+		})
+		return
+	}
+
 	memUsersMu.Lock()
 	defer memUsersMu.Unlock()
 
-	if _, ok := memUsers[input.Email]; ok {
+	if _, ok := memUsers[emailClean]; ok {
 		sendError(w, http.StatusConflict, "EMAIL_EXISTS", "Email already in use")
 		return
 	}
 
 	user := UserRecord{
 		ID:           memUserCounter,
-		Email:        input.Email,
+		Email:        emailClean,
 		PasswordHash: string(hashed),
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
 	memUserCounter++
-	memUsers[input.Email] = user
+	memUsers[emailClean] = user
 
 	response.JSON(w, http.StatusCreated, map[string]interface{}{
 		"message": "User registered successfully",
@@ -183,30 +283,50 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	memUsersMu.RLock()
-	user, ok := memUsers[input.Email]
-	memUsersMu.RUnlock()
+	emailClean := strings.TrimSpace(strings.ToLower(input.Email))
 
-	if !ok {
-		sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
-		return
+	var userID uint
+	var dbPasswordHash string
+
+	if h.db != nil {
+		err := h.db.QueryRow(r.Context(), `SELECT id, password_hash FROM journal_users WHERE email = $1`, emailClean).Scan(&userID, &dbPasswordHash)
+		if err != nil {
+			sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
+			return
+		}
+	} else {
+		memUsersMu.RLock()
+		user, ok := memUsers[emailClean]
+		memUsersMu.RUnlock()
+
+		if !ok {
+			sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
+			return
+		}
+		userID = user.ID
+		dbPasswordHash = user.PasswordHash
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(dbPasswordHash), []byte(input.Password)); err != nil {
 		sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
 		return
 	}
 
 	token := generateSessionToken()
+
+	if h.db != nil {
+		_, _ = h.db.Exec(r.Context(), `INSERT INTO active_sessions (token, user_id, created_at) VALUES ($1, $2, NOW())`, token, userID)
+	}
+
 	ActiveSessionsMu.Lock()
-	ActiveSessions[token] = user.ID
+	ActiveSessions[token] = userID
 	ActiveSessionsMu.Unlock()
 
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"token": token,
 		"user": map[string]interface{}{
-			"id":    user.ID,
-			"email": user.Email,
+			"id":    userID,
+			"email": emailClean,
 		},
 	})
 }
@@ -215,6 +335,9 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 	if len(authHeader) >= 8 && authHeader[:7] == "Bearer " {
 		token := authHeader[7:]
+		if h.db != nil {
+			_, _ = h.db.Exec(r.Context(), `DELETE FROM active_sessions WHERE token = $1`, token)
+		}
 		ActiveSessionsMu.Lock()
 		delete(ActiveSessions, token)
 		ActiveSessionsMu.Unlock()
@@ -230,27 +353,52 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	oldToken := authHeader[7:]
-	ActiveSessionsMu.Lock()
-	userID, ok := ActiveSessions[oldToken]
-	if ok {
-		delete(ActiveSessions, oldToken)
-		newToken := generateSessionToken()
-		ActiveSessions[newToken] = userID
-		ActiveSessionsMu.Unlock()
-		response.JSON(w, http.StatusOK, map[string]string{"token": newToken})
+	userID := h.getUserIDFromRequest(r)
+
+	if userID == 0 {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Token session not found")
 		return
 	}
+
+	newToken := generateSessionToken()
+
+	if h.db != nil {
+		_, _ = h.db.Exec(r.Context(), `DELETE FROM active_sessions WHERE token = $1`, oldToken)
+		_, _ = h.db.Exec(r.Context(), `INSERT INTO active_sessions (token, user_id, created_at) VALUES ($1, $2, NOW())`, newToken, userID)
+	}
+
+	ActiveSessionsMu.Lock()
+	delete(ActiveSessions, oldToken)
+	ActiveSessions[newToken] = userID
 	ActiveSessionsMu.Unlock()
 
-	sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Token session not found")
+	response.JSON(w, http.StatusOK, map[string]string{"token": newToken})
 }
 
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
+
+	email := "demo@masterfabric.co"
+	createdAt := time.Now()
+
+	if h.db != nil {
+		_ = h.db.QueryRow(r.Context(), `SELECT email, created_at FROM journal_users WHERE id = $1`, userID).Scan(&email, &createdAt)
+	} else {
+		memUsersMu.RLock()
+		for _, u := range memUsers {
+			if u.ID == userID {
+				email = u.Email
+				createdAt = u.CreatedAt
+				break
+			}
+		}
+		memUsersMu.RUnlock()
+	}
+
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"id":         userID,
-		"email":      "demo@masterfabric.co",
-		"created_at": time.Now(),
+		"email":      email,
+		"created_at": createdAt,
 		"config": map[string]interface{}{
 			"theme":         "dark",
 			"notifications": true,
@@ -267,13 +415,102 @@ func (h *Handler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
+	userID := h.getUserIDFromRequest(r)
+
+	authHeader := r.Header.Get("Authorization")
+	var token string
+	if len(authHeader) >= 8 && authHeader[:7] == "Bearer " {
+		token = authHeader[7:]
+	}
+
+	// 1. Delete from PostgreSQL database if pool exists
+	if h.db != nil {
+		ctx := r.Context()
+
+		var email string
+		_ = h.db.QueryRow(ctx, `SELECT email FROM journal_users WHERE id = $1`, userID).Scan(&email)
+
+		_, _ = h.db.Exec(ctx, `DELETE FROM active_sessions WHERE user_id = $1 OR token = $2`, userID, token)
+		_, _ = h.db.Exec(ctx, `DELETE FROM journals WHERE user_id = $1`, userID)
+		_, _ = h.db.Exec(ctx, `DELETE FROM user_configs WHERE user_id = $1`, userID)
+		_, _ = h.db.Exec(ctx, `DELETE FROM llm_metrics WHERE user_id = $1`, userID)
+		_, _ = h.db.Exec(ctx, `DELETE FROM journal_users WHERE id = $1`, userID)
+
+		if email != "" {
+			memUsersMu.Lock()
+			delete(memUsers, email)
+			memUsersMu.Unlock()
+		}
+	}
+
+	// 2. Clear in-memory data structures
+	ActiveSessionsMu.Lock()
+	if token != "" {
+		delete(ActiveSessions, token)
+	}
+	for t, uid := range ActiveSessions {
+		if uid == userID {
+			delete(ActiveSessions, t)
+		}
+	}
+	ActiveSessionsMu.Unlock()
+
+	memUsersMu.Lock()
+	for e, u := range memUsers {
+		if u.ID == userID {
+			delete(memUsers, e)
+		}
+	}
+	memUsersMu.Unlock()
+
+	memJournalsMu.Lock()
+	filteredJournals := []entity.Journal{}
+	for _, j := range memJournals {
+		if j.UserID != userID {
+			filteredJournals = append(filteredJournals, j)
+		}
+	}
+	memJournals = filteredJournals
+	memJournalsMu.Unlock()
+
+	memConfigsMu.Lock()
+	delete(memConfigs, userID)
+	memConfigsMu.Unlock()
+
+	memMetricsMu.Lock()
+	filteredMetrics := []entity.LlmMetric{}
+	for _, m := range memMetrics {
+		if m.UserID != userID {
+			filteredMetrics = append(filteredMetrics, m)
+		}
+	}
+	memMetrics = filteredMetrics
+	memMetricsMu.Unlock()
+
 	response.JSON(w, http.StatusOK, map[string]string{"message": "Account deleted successfully"})
 }
 
 // --- User Config Endpoints ---
 
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
+
+	if h.db != nil {
+		var cfg entity.UserConfig
+		err := h.db.QueryRow(r.Context(), `SELECT id, user_id, theme, notifications FROM user_configs WHERE user_id = $1`, userID).Scan(&cfg.ID, &cfg.UserID, &cfg.Theme, &cfg.Notifications)
+		if err == nil {
+			response.JSON(w, http.StatusOK, cfg)
+			return
+		}
+		cfg = entity.UserConfig{
+			UserID:        userID,
+			Theme:         "dark",
+			Notifications: true,
+		}
+		_ = h.db.QueryRow(r.Context(), `INSERT INTO user_configs (user_id, theme, notifications) VALUES ($1, $2, $3) RETURNING id`, userID, cfg.Theme, cfg.Notifications).Scan(&cfg.ID)
+		response.JSON(w, http.StatusOK, cfg)
+		return
+	}
 
 	memConfigsMu.RLock()
 	userConfig, ok := memConfigs[userID]
@@ -294,7 +531,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
 
 	type ConfigInput struct {
 		Theme         string `json:"theme"`
@@ -307,12 +544,24 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	memConfigsMu.Lock()
 	userConfig := entity.UserConfig{
 		UserID:        userID,
 		Theme:         input.Theme,
 		Notifications: input.Notifications,
 	}
+
+	if h.db != nil {
+		_, err := h.db.Exec(r.Context(),
+			`INSERT INTO user_configs (user_id, theme, notifications) VALUES ($1, $2, $3)
+			 ON CONFLICT (user_id) DO UPDATE SET theme = EXCLUDED.theme, notifications = EXCLUDED.notifications`,
+			userID, input.Theme, input.Notifications)
+		if err == nil {
+			response.JSON(w, http.StatusOK, userConfig)
+			return
+		}
+	}
+
+	memConfigsMu.Lock()
 	memConfigs[userID] = userConfig
 	memConfigsMu.Unlock()
 
@@ -332,7 +581,7 @@ func (h *Handler) AnalyzeJournal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
 
 	result, err := h.analyzer.Analyze(r.Context(), input.Content)
 	if err != nil {
@@ -340,19 +589,28 @@ func (h *Handler) AnalyzeJournal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Automatically record metric telemetry
-	memMetricsMu.Lock()
+	now := time.Now()
 	metric := entity.LlmMetric{
-		ID:         memMetricID,
 		UserID:     userID,
 		LatencyMs:  result.Metrics.LatencyMs,
 		TokenCount: result.Metrics.TotalTokens,
 		ErrorLog:   fmt.Sprintf("%d%%", result.CognitiveLoad),
-		CreatedAt:  time.Now(),
+		CreatedAt:  now,
 	}
-	memMetricID++
-	memMetrics = append(memMetrics, metric)
-	memMetricsMu.Unlock()
+
+	if h.db != nil {
+		var newID uint
+		_ = h.db.QueryRow(r.Context(),
+			`INSERT INTO llm_metrics (user_id, latency_ms, token_count, error_log, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			userID, result.Metrics.LatencyMs, result.Metrics.TotalTokens, metric.ErrorLog, now).Scan(&newID)
+		metric.ID = newID
+	} else {
+		memMetricsMu.Lock()
+		metric.ID = memMetricID
+		memMetricID++
+		memMetrics = append(memMetrics, metric)
+		memMetricsMu.Unlock()
+	}
 
 	response.JSON(w, http.StatusOK, result)
 }
@@ -369,7 +627,7 @@ func (h *Handler) CreateJournal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
 
 	decisionScore := 50.0
 	re := regexp.MustCompile(`Cognitive\s+Load\s+Score:\s*(\d+)`)
@@ -388,17 +646,31 @@ func (h *Handler) CreateJournal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	memJournalsMu.Lock()
-	defer memJournalsMu.Unlock()
-
+	now := time.Now()
 	j := entity.Journal{
-		ID:            memJournalID,
 		UserID:        userID,
 		Content:       input.Content,
 		DecisionScore: decisionScore,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
+
+	if h.db != nil {
+		var newID uint
+		err := h.db.QueryRow(r.Context(),
+			`INSERT INTO journals (user_id, content, decision_score, created_at, updated_at) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			userID, input.Content, decisionScore, now, now).Scan(&newID)
+		if err == nil {
+			j.ID = newID
+			response.JSON(w, http.StatusCreated, j)
+			return
+		}
+	}
+
+	memJournalsMu.Lock()
+	defer memJournalsMu.Unlock()
+
+	j.ID = memJournalID
 	memJournalID++
 	memJournals = append(memJournals, j)
 
@@ -406,7 +678,24 @@ func (h *Handler) CreateJournal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetJournals(w http.ResponseWriter, r *http.Request) {
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
+
+	if h.db != nil {
+		rows, err := h.db.Query(r.Context(),
+			`SELECT id, user_id, content, decision_score, created_at, updated_at FROM journals WHERE user_id = $1 ORDER BY created_at DESC`, userID)
+		if err == nil {
+			defer rows.Close()
+			userJournals := []entity.Journal{}
+			for rows.Next() {
+				var j entity.Journal
+				if err := rows.Scan(&j.ID, &j.UserID, &j.Content, &j.DecisionScore, &j.CreatedAt, &j.UpdatedAt); err == nil {
+					userJournals = append(userJournals, j)
+				}
+			}
+			response.JSON(w, http.StatusOK, userJournals)
+			return
+		}
+	}
 
 	memJournalsMu.RLock()
 	defer memJournalsMu.RUnlock()
@@ -437,19 +726,33 @@ func (h *Handler) CreateMetric(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
 
-	memMetricsMu.Lock()
-	defer memMetricsMu.Unlock()
-
+	now := time.Now()
 	metric := entity.LlmMetric{
-		ID:         memMetricID,
 		UserID:     userID,
 		LatencyMs:  input.LatencyMs,
 		TokenCount: input.TokenCount,
 		ErrorLog:   input.DecisionScore,
-		CreatedAt:  time.Now(),
+		CreatedAt:  now,
 	}
+
+	if h.db != nil {
+		var newID uint
+		err := h.db.QueryRow(r.Context(),
+			`INSERT INTO llm_metrics (user_id, latency_ms, token_count, error_log, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			userID, input.LatencyMs, input.TokenCount, input.DecisionScore, now).Scan(&newID)
+		if err == nil {
+			metric.ID = newID
+			response.JSON(w, http.StatusCreated, metric)
+			return
+		}
+	}
+
+	memMetricsMu.Lock()
+	defer memMetricsMu.Unlock()
+
+	metric.ID = memMetricID
 	memMetricID++
 	memMetrics = append(memMetrics, metric)
 
@@ -457,7 +760,24 @@ func (h *Handler) CreateMetric(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
+
+	if h.db != nil {
+		rows, err := h.db.Query(r.Context(),
+			`SELECT id, user_id, latency_ms, token_count, error_log, created_at FROM llm_metrics WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`, userID)
+		if err == nil {
+			defer rows.Close()
+			userMetrics := []entity.LlmMetric{}
+			for rows.Next() {
+				var m entity.LlmMetric
+				if err := rows.Scan(&m.ID, &m.UserID, &m.LatencyMs, &m.TokenCount, &m.ErrorLog, &m.CreatedAt); err == nil {
+					userMetrics = append(userMetrics, m)
+				}
+			}
+			response.JSON(w, http.StatusOK, userMetrics)
+			return
+		}
+	}
 
 	memMetricsMu.RLock()
 	defer memMetricsMu.RUnlock()
@@ -476,7 +796,20 @@ func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetScores(w http.ResponseWriter, r *http.Request) {
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
+
+	if h.db != nil {
+		var avg float64
+		err := h.db.QueryRow(r.Context(),
+			`SELECT COALESCE(AVG(decision_score), 50.0) FROM journals WHERE user_id = $1`, userID).Scan(&avg)
+		if err == nil {
+			response.JSON(w, http.StatusOK, map[string]interface{}{
+				"user_id":            userID,
+				"avg_cognitive_load": avg,
+			})
+			return
+		}
+	}
 
 	memJournalsMu.RLock()
 	defer memJournalsMu.RUnlock()
@@ -506,7 +839,11 @@ func (h *Handler) CreateErrorLog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ClearMetrics(w http.ResponseWriter, r *http.Request) {
-	userID := getUserIDFromRequest(r)
+	userID := h.getUserIDFromRequest(r)
+
+	if h.db != nil {
+		_, _ = h.db.Exec(r.Context(), `DELETE FROM llm_metrics WHERE user_id = $1`, userID)
+	}
 
 	memMetricsMu.Lock()
 	defer memMetricsMu.Unlock()

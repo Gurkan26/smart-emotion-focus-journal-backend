@@ -205,7 +205,7 @@ func buildDependencies(
 		Redis:              redisClient,
 		CORSAllowedOrigins: cfg.Server.CORSAllowedOrigins,
 		MaxBodyBytes:       cfg.Server.MaxBodyBytes,
-		JournalHandler:     journalHandler.NewHandler(),
+		JournalHandler:     journalHandler.NewHandler(db),
 	}
 
 	if db == nil {
