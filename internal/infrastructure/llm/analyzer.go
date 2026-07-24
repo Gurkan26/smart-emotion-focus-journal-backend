@@ -44,11 +44,11 @@ func NewAnalyzer() *Analyzer {
 	apiKey := os.Getenv("LLM_API_KEY")
 	model := os.Getenv("LLM_MODEL")
 	if model == "" {
-		model = "HF://mlc-ai/gemma-2b-it-q4f16_1-MLC"
+		model = "gemma2:2b"
 	}
 
 	return &Analyzer{
-		client:  &http.Client{Timeout: 30 * time.Second},
+		client:  &http.Client{Timeout: 120 * time.Second},
 		apiBase: strings.TrimSuffix(apiBase, "/"),
 		apiKey:  apiKey,
 		model:   model,
