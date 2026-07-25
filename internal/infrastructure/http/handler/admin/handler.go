@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +14,6 @@ import (
 type Handler struct {
 	db      *pgxpool.Pool
 	wikiMCP *mcp.DeepWikiMCP
-	mu      sync.RWMutex
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
