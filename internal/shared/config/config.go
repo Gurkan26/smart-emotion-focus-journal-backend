@@ -54,8 +54,14 @@ type DatabaseConfig struct {
 	MinConns int32
 }
 
-// DSN returns the PostgreSQL connection string with escaped credentials.
+// DSN returns the PostgreSQL connection string with escaped credentials or reads DATABASE_URL.
 func (d DatabaseConfig) DSN() string {
+	if rawURL := os.Getenv("DATABASE_URL"); rawURL != "" {
+		return rawURL
+	}
+	if rawURL := os.Getenv("POSTGRES_URL"); rawURL != "" {
+		return rawURL
+	}
 	u := url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(d.User, d.Password),
