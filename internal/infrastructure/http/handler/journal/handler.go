@@ -72,7 +72,8 @@ func (h *Handler) ensureTables(ctx context.Context) {
 			email           VARCHAR(255) NOT NULL UNIQUE,
 			password_hash   VARCHAR(255) NOT NULL,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at      TIMESTAMPTZ DEFAULT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS active_sessions (
 			token           VARCHAR(255) PRIMARY KEY,
@@ -105,6 +106,9 @@ func (h *Handler) ensureTables(ctx context.Context) {
 		`CREATE INDEX IF NOT EXISTS idx_journals_user_id ON journals(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_metrics_user_id ON llm_metrics(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_active_sessions_user_id ON active_sessions(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_journal_users_deleted_at ON journal_users(deleted_at);`,
+		// Ensure deleted_at column exists for existing tables
+		`ALTER TABLE journal_users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL;`,
 	}
 	for _, q := range queries {
 		_, _ = h.db.Exec(ctx, q)
@@ -213,12 +217,16 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	emailClean := strings.TrimSpace(strings.ToLower(input.Email))
 
 	if h.db != nil {
+		// Check if email exists and is active (not soft-deleted)
 		var exists bool
-		_ = h.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM journal_users WHERE email = $1)`, emailClean).Scan(&exists)
+		_ = h.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM journal_users WHERE email = $1 AND deleted_at IS NULL)`, emailClean).Scan(&exists)
 		if exists {
 			sendError(w, http.StatusConflict, "EMAIL_EXISTS", "Email already in use")
 			return
 		}
+
+		// If a soft-deleted record exists with this email, permanently remove it first
+		_, _ = h.db.Exec(r.Context(), `DELETE FROM journal_users WHERE email = $1 AND deleted_at IS NOT NULL`, emailClean)
 
 		var newID uint
 		err := h.db.QueryRow(r.Context(),
@@ -229,16 +237,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		memUsersMu.Lock()
-		memUsers[emailClean] = UserRecord{
-			ID:           newID,
-			Email:        emailClean,
-			PasswordHash: string(hashed),
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
-		}
-		memUsersMu.Unlock()
-
+		// No dual-write to in-memory cache when PostgreSQL is available
 		response.JSON(w, http.StatusCreated, map[string]interface{}{
 			"message": "User registered successfully",
 			"user": map[string]interface{}{
@@ -289,7 +288,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var dbPasswordHash string
 
 	if h.db != nil {
-		err := h.db.QueryRow(r.Context(), `SELECT id, password_hash FROM journal_users WHERE email = $1`, emailClean).Scan(&userID, &dbPasswordHash)
+		// Only allow login for active (non-deleted) accounts
+		err := h.db.QueryRow(r.Context(), `SELECT id, password_hash FROM journal_users WHERE email = $1 AND deleted_at IS NULL`, emailClean).Scan(&userID, &dbPasswordHash)
 		if err != nil {
 			sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
 			return
@@ -431,23 +431,49 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		token = authHeader[7:]
 	}
 
-	// 1. Delete from PostgreSQL database if pool exists
+	// 1. Delete from PostgreSQL database using a transaction for atomicity
 	if h.db != nil {
 		ctx := r.Context()
 
-		var email string
-		_ = h.db.QueryRow(ctx, `SELECT email FROM journal_users WHERE id = $1`, userID).Scan(&email)
+		tx, txErr := h.db.Begin(ctx)
+		if txErr != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to start transaction for account deletion")
+			return
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck
 
-		_, _ = h.db.Exec(ctx, `DELETE FROM active_sessions WHERE user_id = $1 OR token = $2`, userID, token)
-		_, _ = h.db.Exec(ctx, `DELETE FROM journals WHERE user_id = $1`, userID)
-		_, _ = h.db.Exec(ctx, `DELETE FROM user_configs WHERE user_id = $1`, userID)
-		_, _ = h.db.Exec(ctx, `DELETE FROM llm_metrics WHERE user_id = $1`, userID)
-		_, _ = h.db.Exec(ctx, `DELETE FROM journal_users WHERE id = $1`, userID)
+		// Delete all dependent rows first
+		if _, err := tx.Exec(ctx, `DELETE FROM active_sessions WHERE user_id = $1`, userID); err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to clear sessions")
+			return
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM journals WHERE user_id = $1`, userID); err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to clear journals")
+			return
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM user_configs WHERE user_id = $1`, userID); err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to clear config")
+			return
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM llm_metrics WHERE user_id = $1`, userID); err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to clear metrics")
+			return
+		}
 
-		if email != "" {
-			memUsersMu.Lock()
-			delete(memUsers, email)
-			memUsersMu.Unlock()
+		// Soft-delete the user (mark as deleted instead of removing the row)
+		result, err := tx.Exec(ctx, `UPDATE journal_users SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`, userID)
+		if err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to delete account")
+			return
+		}
+		if result.RowsAffected() == 0 {
+			sendError(w, http.StatusNotFound, "NOT_FOUND", "Account not found or already deleted")
+			return
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to commit account deletion")
+			return
 		}
 	}
 
@@ -905,3 +931,135 @@ func (h *Handler) ClearMetrics(w http.ResponseWriter, r *http.Request) {
 
 	response.JSON(w, http.StatusOK, map[string]string{"message": "Metrics cleared"})
 }
+
+// --- Prompt Optimizer Endpoints ---
+
+type OptimizePromptInput struct {
+	Prompt            string `json:"prompt"`
+	Template          string `json:"template"`
+	CustomInstruction string `json:"custom_instruction,omitempty"`
+}
+
+func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
+
+	var input OptimizePromptInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.Prompt) == "" {
+		sendError(w, http.StatusBadRequest, "INVALID_INPUT", "Prompt text is required for optimization")
+		return
+	}
+
+	if input.Template == "" {
+		input.Template = "accurate"
+	}
+
+	result, err := h.analyzer.OptimizePrompt(r.Context(), input.Prompt, input.Template, input.CustomInstruction)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "OPTIMIZATION_FAILED", "Failed to optimize prompt")
+		return
+	}
+
+	// Persist optimization to DB if pool exists
+	if h.db != nil {
+		_, _ = h.db.Exec(r.Context(),
+			`INSERT INTO prompt_optimizations (user_id, original_prompt, optimized_prompt, template, custom_instruction, original_tokens, optimized_tokens, latency_ms, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+			userID, result.OriginalPrompt, result.OptimizedPrompt, result.Template, result.CustomInstruction, result.OriginalTokens, result.OptimizedTokens, result.Metrics.LatencyMs)
+	}
+
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) GetPromptHistory(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok {
+		sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
+
+	type HistoryRecord struct {
+		ID                uint      `json:"id"`
+		OriginalPrompt    string    `json:"original_prompt"`
+		OptimizedPrompt   string    `json:"optimized_prompt"`
+		Template          string    `json:"template"`
+		CustomInstruction string    `json:"custom_instruction,omitempty"`
+		OriginalTokens    int       `json:"original_tokens"`
+		OptimizedTokens   int       `json:"optimized_tokens"`
+		LatencyMs         int64     `json:"latency_ms"`
+		CreatedAt         time.Time `json:"created_at"`
+	}
+
+	history := []HistoryRecord{}
+
+	if h.db != nil {
+		rows, err := h.db.Query(r.Context(),
+			`SELECT id, original_prompt, optimized_prompt, template, COALESCE(custom_instruction, ''), original_tokens, optimized_tokens, latency_ms, created_at 
+			 FROM prompt_optimizations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`, userID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var rec HistoryRecord
+				if err := rows.Scan(&rec.ID, &rec.OriginalPrompt, &rec.OptimizedPrompt, &rec.Template, &rec.CustomInstruction, &rec.OriginalTokens, &rec.OptimizedTokens, &rec.LatencyMs, &rec.CreatedAt); err == nil {
+					history = append(history, rec)
+				}
+			}
+		}
+	}
+
+	response.JSON(w, http.StatusOK, history)
+}
+
+func (h *Handler) GetTemplates(w http.ResponseWriter, r *http.Request) {
+	templates := []map[string]interface{}{
+		{
+			"id":          "accurate",
+			"name":        "En Doğru Sonuç",
+			"description": "Prompt'u en hassas, net ve eksiksiz yanıt verecek şekilde yapılandırır.",
+			"icon":        "Target",
+			"badge":       "High Precision",
+		},
+		{
+			"id":          "minimal",
+			"name":        "Minimum Token",
+			"description": "Gereksiz kelimeleri çıkartıp token tüketimini ve maliyeti en aza indirir.",
+			"icon":        "Zap",
+			"badge":       "Token Saver",
+		},
+		{
+			"id":          "creative",
+			"name":        "En Yaratıcı",
+			"description": "Modelin zengin, hayal gücü yüksek ve detaylı çıktılar üretmesini sağlar.",
+			"icon":        "Sparkles",
+			"badge":       "High Creativity",
+		},
+		{
+			"id":          "code",
+			"name":        "Kod Odaklı",
+			"description": "Yazılım geliştirme görevleri için üretim kalitesinde kod spesifikasyonuna çevirir.",
+			"icon":        "Code",
+			"badge":       "Developer Pack",
+		},
+		{
+			"id":          "academic",
+			"name":        "Akademik & Araştırma",
+			"description": "Resmi terminoloji ve metodolojik analiz yapısına dönüştürür.",
+			"icon":        "GraduationCap",
+			"badge":       "Research Ready",
+		},
+		{
+			"id":          "custom",
+			"name":        "Özel Talimat",
+			"description": "Sizin belirteceğiniz özel optimizasyon kuralına göre prompt'u yeniden biçimlendirir.",
+			"icon":        "Sliders",
+			"badge":       "Custom Rule",
+		},
+	}
+
+	response.JSON(w, http.StatusOK, templates)
+}
+

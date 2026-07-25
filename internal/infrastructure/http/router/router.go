@@ -107,11 +107,15 @@ func New(deps Dependencies) *chi.Mux {
 		r.Get("/config", deps.JournalHandler.GetConfig)
 		r.Put("/config", deps.JournalHandler.UpdateConfig)
 
-		// Journal & Monitoring API
+		// Journal, Prompt Optimizer & Monitoring API
 		r.Route("/api", func(r chi.Router) {
 			r.Post("/journal/analyze", deps.JournalHandler.AnalyzeJournal)
 			r.Post("/journal", deps.JournalHandler.CreateJournal)
 			r.Get("/journal", deps.JournalHandler.GetJournals)
+
+			r.Post("/prompt/optimize", deps.JournalHandler.OptimizePrompt)
+			r.Get("/prompt/history", deps.JournalHandler.GetPromptHistory)
+			r.Get("/prompt/templates", deps.JournalHandler.GetTemplates)
 
 			r.Post("/monitor/metrics", deps.JournalHandler.CreateMetric)
 			r.Get("/monitor/metrics", deps.JournalHandler.GetMetrics)
