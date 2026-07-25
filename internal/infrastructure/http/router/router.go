@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	// Handlers
+	adminHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/admin"
 	apimgmtHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/apimanagement"
 	auditHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/audit"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/health"
@@ -56,13 +57,14 @@ type Dependencies struct {
 	AuditHandler    *auditHandler.Handler
 	RealtimeHandler *realtimeHandler.Handler
 	JournalHandler  *journalHandler.Handler
+	AdminHandler    *adminHandler.Handler
 
 	// Gateway
 	GatewayPipeline *gateway.Pipeline
 
 	// Repos needed for middleware
-	OrgRepo        tenantRepo.OrgRepository
-	WorkspaceRepo  tenantRepo.WorkspaceRepository
+	OrgRepo       tenantRepo.OrgRepository
+	WorkspaceRepo tenantRepo.WorkspaceRepository
 }
 
 // New creates the root Chi router with all middleware and routes.
@@ -122,6 +124,15 @@ func New(deps Dependencies) *chi.Mux {
 			r.Get("/monitor/scores", deps.JournalHandler.GetScores)
 			r.Post("/monitor/error", deps.JournalHandler.CreateErrorLog)
 			r.Delete("/monitor/clear", deps.JournalHandler.ClearMetrics)
+
+			// Admin & MCP Panel Endpoints
+			if deps.AdminHandler != nil {
+				r.Get("/admin/config", deps.AdminHandler.GetConfig)
+				r.Put("/admin/config", deps.AdminHandler.UpdateConfig)
+				r.Get("/admin/adapters", deps.AdminHandler.ListAdapters)
+				r.Post("/admin/adapters/activate", deps.AdminHandler.ActivateAdapter)
+				r.Post("/admin/mcp/deepwiki", deps.AdminHandler.QueryDeepWiki)
+			}
 		})
 	}
 

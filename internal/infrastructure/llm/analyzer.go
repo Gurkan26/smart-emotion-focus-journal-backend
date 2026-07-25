@@ -41,8 +41,25 @@ type Analyzer struct {
 
 func NewAnalyzer() *Analyzer {
 	apiBase := os.Getenv("LLM_API_BASE")
+	if apiBase == "" {
+		apiBase = os.Getenv("CLOUDFLARE_AI_BASE")
+	}
+	if apiBase == "" {
+		apiBase = os.Getenv("OLLAMA_API_BASE")
+	}
+	if apiBase == "" {
+		apiBase = "http://localhost:11434/v1"
+	}
+
 	apiKey := os.Getenv("LLM_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("CLOUDFLARE_API_KEY")
+	}
+
 	model := os.Getenv("LLM_MODEL")
+	if model == "" {
+		model = os.Getenv("CLOUDFLARE_MODEL")
+	}
 	if model == "" {
 		model = "gemma2:2b"
 	}

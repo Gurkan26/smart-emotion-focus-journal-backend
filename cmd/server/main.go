@@ -15,6 +15,7 @@ import (
 
 	// Infrastructure
 	infraAuth "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/auth"
+	adminHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/admin"
 	apimgmtHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/apimanagement"
 	auditHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/audit"
 	iamHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/iam"
@@ -208,6 +209,7 @@ func buildDependencies(
 		CORSAllowedOrigins: cfg.Server.CORSAllowedOrigins,
 		MaxBodyBytes:       cfg.Server.MaxBodyBytes,
 		JournalHandler:     journalHandler.NewHandler(db),
+		AdminHandler:       adminHandler.NewHandler(db),
 	}
 
 	if db == nil {
