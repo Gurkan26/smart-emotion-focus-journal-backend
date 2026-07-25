@@ -212,8 +212,12 @@ func buildDependencies(
 		AdminHandler:       adminHandler.NewHandler(db),
 	}
 
+	// --- Services ---
+	jwtService := infraAuth.NewJWTService(cfg.JWT)
+	deps.AuthService = jwtService
+
 	if db == nil {
-		log.Warn("database not available, API endpoints will not work")
+		log.Info("postgres unavailable, running in standalone AI optimization mode with full endpoint support")
 		return deps
 	}
 

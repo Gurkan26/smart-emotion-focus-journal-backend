@@ -112,7 +112,15 @@ type chatCompletionResponse struct {
 }
 
 func (a *Analyzer) callExternalLLM(ctx context.Context, content string, startTime time.Time) (*AnalysisResult, error) {
-	url := fmt.Sprintf("%s/chat/completions", a.apiBase)
+	cleanBase := strings.TrimSuffix(a.apiBase, "/")
+	var url string
+	if strings.HasSuffix(cleanBase, "/v1") {
+		url = fmt.Sprintf("%s/chat/completions", cleanBase)
+	} else if strings.HasSuffix(cleanBase, "/api") {
+		url = fmt.Sprintf("%s/chat", cleanBase)
+	} else {
+		url = fmt.Sprintf("%s/v1/chat/completions", cleanBase)
+	}
 	sysPrompt := "You are an emotional state analysis assistant. Always respond strictly in English regardless of the input text language. Read the user's text and only return a Decision Score in this format: 'Cognitive Load Score: %X - [One sentence advice in English]'. Do not include any other conversational filler."
 
 	reqBody := chatCompletionRequest{
@@ -340,6 +348,16 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 	var latencyMs int64
 
 	if a.apiBase != "" {
+		cleanBase := strings.TrimSuffix(a.apiBase, "/")
+		var targetURL string
+		if strings.HasSuffix(cleanBase, "/v1") {
+			targetURL = fmt.Sprintf("%s/chat/completions", cleanBase)
+		} else if strings.HasSuffix(cleanBase, "/api") {
+			targetURL = fmt.Sprintf("%s/chat", cleanBase)
+		} else {
+			targetURL = fmt.Sprintf("%s/v1/chat/completions", cleanBase)
+		}
+
 		reqBody := chatCompletionRequest{
 			Model: a.model,
 			Messages: []chatMessage{
@@ -351,7 +369,7 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 
 		jsonBytes, err := json.Marshal(reqBody)
 		if err == nil {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/chat/completions", a.apiBase), bytes.NewBuffer(jsonBytes))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(jsonBytes))
 			if err == nil {
 				req.Header.Set("Content-Type", "application/json")
 				if a.apiKey != "" {
