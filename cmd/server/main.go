@@ -233,10 +233,8 @@ func buildDependencies(
 	auditRepo := pgAudit.NewAuditRepo(db)
 
 	// --- Services ---
-	jwtService := infraAuth.NewJWTService(cfg.JWT)
 	rbacService := infraAuth.NewRBACService(roleRepo, redisClient)
 
-	deps.AuthService = jwtService
 	deps.RBACService = rbacService
 	deps.OrgRepo = orgRepo
 	deps.WorkspaceRepo = workspaceRepo
