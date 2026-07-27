@@ -132,6 +132,10 @@ func New(deps Dependencies) *chi.Mux {
 				r.Get("/admin/adapters", deps.AdminHandler.ListAdapters)
 				r.Post("/admin/adapters/activate", deps.AdminHandler.ActivateAdapter)
 				r.Post("/admin/mcp/deepwiki", deps.AdminHandler.QueryDeepWiki)
+				r.Post("/admin/mcp/suite", deps.AdminHandler.ExecuteMCPSuite)
+				r.Post("/admin/finetune/telemetry", deps.AdminHandler.ReceiveTelemetry)
+				r.Get("/admin/finetune/status", deps.AdminHandler.GetFineTuneStatus)
+				r.Post("/admin/finetune/start", deps.AdminHandler.StartFineTune)
 			}
 		})
 	}

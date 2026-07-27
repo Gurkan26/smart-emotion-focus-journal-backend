@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: journal-ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: journal-cloudflared
+    restart: always
+    command: tunnel --no-autoupdate --url http://ollama:11434
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_data:

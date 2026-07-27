@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  ollama-gpu:
+    image: ollama/ollama:latest
+    container_name: journal-ollama-gpu
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: journal-cloudflared-tunnel
+    restart: always
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    command: tunnel --no-autoupdate run
+    depends_on:
+      - ollama-gpu
+
+volumes:
+  ollama_data:
