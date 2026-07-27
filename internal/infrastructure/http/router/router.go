@@ -136,6 +136,7 @@ func New(deps Dependencies) *chi.Mux {
 				r.Post("/admin/finetune/telemetry", deps.AdminHandler.ReceiveTelemetry)
 				r.Get("/admin/finetune/status", deps.AdminHandler.GetFineTuneStatus)
 				r.Post("/admin/finetune/start", deps.AdminHandler.StartFineTune)
+				r.Get("/admin/finetune/history", deps.AdminHandler.GetFineTuneHistory)
 			}
 		})
 	}
