@@ -4,7 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -297,34 +303,83 @@ func (h *Handler) GetFineTuneHistory(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, history)
 }
 
-// StartFineTune initializes a training run and saves to DB.
+// findPythonExecutable searches for a working Python 3 executable on the system.
+func findPythonExecutable() string {
+	candidates := []string{"python3", "python"}
+	if runtime.GOOS == "windows" {
+		candidates = []string{"python", "python3", "py"}
+	}
+	for _, name := range candidates {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+	}
+	return "python"
+}
+
+// findScriptsDir locates the scripts/ directory relative to the working directory or executable.
+func findScriptsDir() string {
+	// Try relative to working directory first
+	candidates := []string{
+		filepath.Join("scripts"),
+		filepath.Join("..", "scripts"),
+		filepath.Join("..", "..", "scripts"),
+	}
+	for _, c := range candidates {
+		abs, err := filepath.Abs(c)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(abs, "peft_finetune.py")); err == nil {
+			return abs
+		}
+	}
+	return "scripts"
+}
+
+// StartFineTune launches a real PEFT (LoRA) fine-tuning process using the Python training script.
+// The Python script runs as a background process and sends live telemetry back to this server.
 func (h *Handler) StartFineTune(w http.ResponseWriter, r *http.Request) {
 	type StartInput struct {
 		AdapterName  string  `json:"adapter_name"`
 		Epochs       int     `json:"epochs"`
 		LoraRank     int     `json:"lora_r"`
 		LearningRate float64 `json:"learning_rate"`
+		Model        string  `json:"model"`
 	}
 	var input StartInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.AdapterName == "" {
 		input.AdapterName = "gemma-journal-custom-lora"
-		input.Epochs = 5
-		input.LoraRank = 16
+		input.Epochs = 3
+		input.LoraRank = 8
+		input.LearningRate = 0.0002
+	}
+	if input.Model == "" {
+		input.Model = "google/gemma-2b-it"
+	}
+	if input.Epochs <= 0 {
+		input.Epochs = 3
+	}
+	if input.LoraRank <= 0 {
+		input.LoraRank = 8
+	}
+	if input.LearningRate <= 0 {
 		input.LearningRate = 0.0002
 	}
 
+	// Set initial telemetry state
 	job := FineTuneTelemetryDTO{
 		Status:       "RUNNING",
-		CurrentEpoch: 1,
+		CurrentEpoch: 0,
 		TotalEpochs:  input.Epochs,
-		Step:         1,
-		TotalSteps:   input.Epochs * 10,
-		ProgressPct:  10.0,
-		Loss:         2.45,
+		Step:         0,
+		TotalSteps:   0,
+		ProgressPct:  0.0,
+		Loss:         0.0,
 		LearningRate: input.LearningRate,
-		VramGB:       4.1,
+		VramGB:       0.0,
 		AdapterName:  input.AdapterName,
-		Message:      "Fine-tuning job started on local GPU workstation...",
+		Message:      fmt.Sprintf("Launching PEFT LoRA training with model '%s'...", input.Model),
 		UpdatedAt:    time.Now(),
 	}
 
@@ -341,9 +396,65 @@ func (h *Handler) StartFineTune(w http.ResponseWriter, r *http.Request) {
 		job.ID = jobID
 	}
 
+	// Determine backend URL for telemetry callbacks
+	backendURL := "http://localhost:8080"
+	if envURL := os.Getenv("BACKEND_URL"); envURL != "" {
+		backendURL = envURL
+	}
+
+	// Locate the Python script
+	scriptsDir := findScriptsDir()
+	scriptPath := filepath.Join(scriptsDir, "peft_finetune.py")
+	pythonExe := findPythonExecutable()
+
+	// Build command arguments
+	cmdArgs := []string{
+		scriptPath,
+		"--model", input.Model,
+		"--adapter-name", input.AdapterName,
+		"--epochs", strconv.Itoa(input.Epochs),
+		"--lora-r", strconv.Itoa(input.LoraRank),
+		"--learning-rate", fmt.Sprintf("%g", input.LearningRate),
+		"--backend-url", backendURL,
+		"--batch-size", "1",
+		"--grad-accum", "4",
+		"--max-length", "256",
+	}
+
+	// Launch the Python training script as a detached background process
+	go func() {
+		log.Printf("[PEFT] Launching: %s %v", pythonExe, cmdArgs)
+
+		cmd := exec.Command(pythonExe, cmdArgs...)
+		cmd.Dir = scriptsDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			errMsg := fmt.Sprintf("PEFT training process failed: %v", err)
+			log.Printf("[PEFT] ERROR: %s", errMsg)
+
+			h.telemetryMu.Lock()
+			h.latestTelemetry.Status = "FAILED"
+			h.latestTelemetry.Message = errMsg
+			h.latestTelemetry.UpdatedAt = time.Now()
+			h.telemetryMu.Unlock()
+
+			if h.db != nil {
+				_, _ = h.db.Exec(context.Background(),
+					`INSERT INTO finetune_jobs (adapter_name, status, message, updated_at) VALUES ($1, 'FAILED', $2, NOW())`,
+					input.AdapterName, errMsg)
+			}
+		} else {
+			log.Printf("[PEFT] Training process completed successfully for adapter '%s'", input.AdapterName)
+		}
+	}()
+
 	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"message": "Fine-tuning job initialized successfully",
-		"job":     job,
+		"message":     "PEFT fine-tuning process launched successfully",
+		"job":         job,
+		"python_path": pythonExe,
+		"script_path": scriptPath,
 	})
 }
 
