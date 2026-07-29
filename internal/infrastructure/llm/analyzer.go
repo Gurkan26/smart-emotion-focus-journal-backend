@@ -354,12 +354,12 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 
 
 	systemPrompts := map[string]string{
-		"accurate": "You are an expert prompt engineer. Rewrite the user's prompt to be maximally precise, unambiguous, clear, and structured for an AI model to produce the most accurate result possible. Return ONLY the rewritten prompt without introductory text or explanations.",
-		"minimal":  "You are a token optimization expert. Compress and rewrite the user's prompt to use the FEWEST tokens possible while preserving 100% of the core intent and critical requirements. Remove filler words. Return ONLY the compressed prompt.",
-		"creative": "You are a creative prompt enhancer. Expand and enrich the user's prompt to inspire deep, highly imaginative, vivid, and detailed responses from AI models. Add rich context and stylistic direction. Return ONLY the enhanced prompt.",
-		"code":     "You are a software architecture prompt specialist. Rewrite the user's prompt as a rigorous technical specification for an AI coding assistant. Include explicit requirements for clean code, error handling, edge cases, and typing. Return ONLY the rewritten technical prompt.",
-		"academic": "You are an academic researcher. Rewrite the user's prompt into a scholarly, research-grade query with formal academic terminology and structured analytical criteria. Return ONLY the scholarly prompt.",
-		"custom":   fmt.Sprintf("You are an expert prompt optimizer. Follow this specific instruction to optimize the user's prompt: '%s'. Return ONLY the optimized prompt.", customInst),
+		"code":     "You are an expert software engineer and prompt architect. Actively rewrite, expand, and elaborate the user's coding prompt into a comprehensive, highly detailed technical specification in the SAME language as the user's prompt (e.g. Turkish or English). Unpack implicit technical requirements (such as component props, accessibility role/aria attributes, animation libraries like framer-motion, state management, event listeners, and dark mode theme context). Do NOT output generic template wrappers. Return ONLY the expanded and rewritten prompt directly.",
+		"creative": "You are a creative prompt enhancer. Expand and enrich the user's prompt into a vivid, highly imaginative, and detailed prompt with stylistic guidance in the same language as the user's prompt. Return ONLY the enhanced prompt.",
+		"academic": "You are an academic prompt researcher. Transform the user's input query into a rigorous, scholarly research prompt with methodological criteria in the same language as the user's prompt. Return ONLY the rewritten prompt.",
+		"minimal":  "You are a token optimization expert. Compress and rewrite the user's prompt to use the FEWEST tokens possible while preserving 100% of the core intent. Return ONLY the compressed prompt.",
+		"accurate": "You are an expert prompt engineer. Rewrite and expand the user's prompt to be maximally precise, unambiguous, detailed, and structured for an AI model in the same language as the input. Return ONLY the rewritten prompt.",
+		"custom":   fmt.Sprintf("You are an expert prompt optimizer. Follow this specific instruction: '%s'. Expand and rewrite the user's prompt in detail in the input language according to this instruction.", customInst),
 	}
 
 	sysPrompt, exists := systemPrompts[template]
@@ -474,25 +474,27 @@ func fallbackOptimize(prompt, template, customInst string) string {
 		return clean
 
 	case "code":
-		return fmt.Sprintf("Act as a senior software architect. Implement the following task with clean architecture, strict error handling, and unit tests:\n\nTask: %s\n\nRequirements:\n- Production-ready code\n- Include clear type definitions\n- Provide step-by-step rationale", clean)
+		lower := strings.ToLower(clean)
+		if strings.Contains(lower, "modal") || strings.Contains(lower, "component") || strings.Contains(lower, "bileşen") {
+			return fmt.Sprintf("%s. Aşağıdaki gereksinimleri karşılamalı:\n\n- Açılıp kapanırken yumuşak animasyon (tercihen framer-motion veya CSS transition/fade ile)\n- Dark mode uyumu: CSS değişkenleri veya bir Theme Context ile arka plan ve metin renkleri otomatik değişmeli\n- Erişilebilirlik (A11y): role=\"dialog\", aria-modal=\"true\", klavyeden Escape tuşu ile kapanma ve overlay tıklaması kontrolü\n- Props arayüzü: { isOpen, onClose, children, title? }\n- Bileşen kendi stilini içermeli (CSS modülü, Tailwind veya styled-components) ve örnek bir kullanım sunulmalı\n- Çıktı olarak tam çalışan fonksiyonel bileşeni (JSX/TSX + stiller birlikte) ver.", clean)
+		}
+		return fmt.Sprintf("%s. Aşağıdaki teknik gereksinimleri tam karşılamalı:\n\n- Üretim seviyesinde (production-ready), temiz mimariye ve modüler standartlara uygun yapı\n- Eksiksiz tip tanımları (TypeScript/Strongly-typed) ve parametre arayüzleri\n- Hata yönetimi (error handling), kenar durum (edge-case) dayanıklılığı ve performans optimizasyonu\n- Çıktı olarak çalıştırılabilir eksiksiz kod bloğu ve kısa mimari açıklama sunulmalı.", clean)
 
 	case "creative":
-		return fmt.Sprintf("Explore the following concept with rich creative detail, vivid imagery, and engaging tone:\n\nPrompt: %s\n\nProvide deep perspective, creative narrative elements, and compelling structure.", clean)
+		return fmt.Sprintf("<role>Creative Director & Narrative Architect</role>\n<context>Imaginative storytelling, rich sensory context, and compelling engagement.</context>\n<task>%s</task>\n<guidelines>\n- Use vivid imagery, dynamic pacing, and evocative language\n- Develop deep narrative structure and distinct stylistic tone\n- Explore subtext, emotional resonance, and creative metaphors\n</guidelines>", clean)
 
 	case "academic":
-		return fmt.Sprintf("Analyze the following research question using academic methodology, peer-reviewed citations, and formal analytical structure:\n\nQuery: %s\n\nInclude background, methodology, discussion of trade-offs, and systematic conclusion.", clean)
+		return fmt.Sprintf("<role>Lead Researcher & Academic Analyst</role>\n<context>Rigorous scholarly inquiry, empirical evidence, and peer-reviewed methodology.</context>\n<query>%s</query>\n<methodology>\n- Analyze core hypotheses with formal scholarly terminology\n- Discuss trade-offs, theoretical implications, and counter-arguments\n- Structure response with Executive Summary, Analytical Body, and Systematic Conclusion\n</methodology>", clean)
 
 	case "custom":
 		if customInst != "" {
-			return fmt.Sprintf("[Instruction: %s]\n\nTask: %s", customInst, clean)
+			return fmt.Sprintf("<instruction>%s</instruction>\n<task>%s</task>\n<constraint>Adhere strictly to specified instruction guidelines without deviation.</constraint>", customInst, clean)
 		}
-		return fmt.Sprintf("Task: %s\nConstraint: Provide exact and verified answer.", clean)
+		return fmt.Sprintf("<task>%s</task>\n<constraint>Provide direct, verified, and high-precision response.</constraint>", clean)
 
 	case "accurate":
 	default:
-		return fmt.Sprintf("Provide a precise, accurate, and structured solution to the following prompt:\n\n'%s'\n\nGuidelines:\n1. Direct and unambiguous answer\n2. Include key edge cases\n3. Format with clean sections and markdown tables if applicable.", clean)
+		return fmt.Sprintf("<role>Domain Expert & Technical Analyst</role>\n<task>%s</task>\n<output_format>\n1. Direct and unambiguous answer\n2. Structured bullet points with key edge-case considerations\n3. Actionable summary table or code snippet if relevant\n</output_format>", clean)
 	}
-
-	return clean
 }
 
