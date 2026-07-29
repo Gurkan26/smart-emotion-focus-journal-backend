@@ -940,6 +940,27 @@ type OptimizePromptInput struct {
 	CustomInstruction string `json:"custom_instruction,omitempty"`
 }
 
+func (i *OptimizePromptInput) UnmarshalJSON(data []byte) error {
+	type rawInput struct {
+		Prompt                 string `json:"prompt"`
+		Template               string `json:"template"`
+		CustomInstruction      string `json:"custom_instruction"`
+		CamelCustomInstruction string `json:"customInstruction"`
+	}
+	var raw rawInput
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	i.Prompt = raw.Prompt
+	i.Template = raw.Template
+	if raw.CustomInstruction != "" {
+		i.CustomInstruction = raw.CustomInstruction
+	} else {
+		i.CustomInstruction = raw.CamelCustomInstruction
+	}
+	return nil
+}
+
 func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
 	userID, ok := h.getUserIDFromRequest(r)
