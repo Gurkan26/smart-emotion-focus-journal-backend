@@ -496,5 +496,7 @@ func fallbackOptimize(prompt, template, customInst string) string {
 	default:
 		return fmt.Sprintf("<role>Domain Expert & Technical Analyst</role>\n<task>%s</task>\n<output_format>\n1. Direct and unambiguous answer\n2. Structured bullet points with key edge-case considerations\n3. Actionable summary table or code snippet if relevant\n</output_format>", clean)
 	}
+
+	return clean
 }
 
