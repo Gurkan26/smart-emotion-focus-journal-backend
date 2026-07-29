@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/dataset"
 )
 
 type AnalysisResult struct {
