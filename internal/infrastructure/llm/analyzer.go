@@ -329,6 +329,27 @@ type OptimizationResult struct {
 func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, customInst string) (*OptimizationResult, error) {
 	startTime := time.Now()
 	cleanPrompt := strings.TrimSpace(rawPrompt)
+	var optimized string
+	var latencyMs int64
+
+	// 1. Hugging Face Datasets Server REST API Direct Query (MasterFabric Academy Section 4)
+	hfDatasetRepo := os.Getenv("HF_DATASET_REPO")
+	if hfDatasetRepo == "" {
+		hfDatasetRepo = "Gurkan26/enterprise-prompt-optimizer"
+	}
+	hfToken := os.Getenv("HF_TOKEN")
+	dsClient := dataset.NewClient(hfToken)
+
+	dsData, dsErr := dsClient.FetchFirstRows(ctx, hfDatasetRepo)
+	if dsErr == nil && dsData != nil {
+		for _, item := range dsData.Rows {
+			if strings.EqualFold(strings.TrimSpace(item.Row.OriginalPrompt), cleanPrompt) {
+				optimized = item.Row.OptimizedPrompt
+				break
+			}
+		}
+	}
+
 
 	systemPrompts := map[string]string{
 		"accurate": "You are an expert prompt engineer. Rewrite the user's prompt to be maximally precise, unambiguous, clear, and structured for an AI model to produce the most accurate result possible. Return ONLY the rewritten prompt without introductory text or explanations.",
@@ -344,10 +365,7 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 		sysPrompt = systemPrompts["accurate"]
 	}
 
-	var optimized string
-	var latencyMs int64
-
-	if a.apiBase != "" {
+	if optimized == "" && a.apiBase != "" {
 		cleanBase := strings.TrimSuffix(a.apiBase, "/")
 		var targetURL string
 		if strings.HasSuffix(cleanBase, "/v1") {

@@ -1,0 +1,14 @@
+FROM gemma2:2b
+ADAPTER adapter_model.safetensors
+
+TEMPLATE """{{ if .System }}<start_of_turn>system
+{{ .System }}<end_of_turn>
+{{ end }}{{ if .Prompt }}<start_of_turn>user
+{{ .Prompt }}<end_of_turn>
+{{ end }}<start_of_turn>model
+{{ .Response }}<end_of_turn>"""
+
+SYSTEM """You are an expert prompt engineer and cognitive analyst. Rewrite the user's prompt to be maximally precise, structured, unambiguous, clear, and efficient for AI models."""
+
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
