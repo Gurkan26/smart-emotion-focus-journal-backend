@@ -83,9 +83,11 @@ func (a *Analyzer) Analyze(ctx context.Context, content string) (*AnalysisResult
 		if err == nil && res != nil {
 			return res, nil
 		}
+		fmt.Printf("[LLM ERROR] Analyze API call failed: %v\n", err)
 	}
 
 	// Standalone Go Cognitive Analysis Engine
+	fmt.Printf("[LLM INFO] Falling back to local standalone Go Cognitive Analysis Engine\n")
 	return a.analyzeFallback(content, startTime), nil
 }
 
@@ -148,14 +150,18 @@ func (a *Analyzer) callExternalLLM(ctx context.Context, content string, startTim
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	}
 
+	fmt.Printf("[LLM INFO] Calling external Journal API URL: %s Model: %s\n", url, a.model)
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("http client Do failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	fmt.Printf("[LLM INFO] Journal API response status: %s (code: %d)\n", resp.Status, resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llm status code: %d", resp.StatusCode)
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		return nil, fmt.Errorf("llm status code: %d, response: %s", resp.StatusCode, buf.String())
 	}
 
 	var completionResp chatCompletionResponse
@@ -388,20 +394,42 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 		}
 
 		jsonBytes, err := json.Marshal(reqBody)
-		if err == nil {
+		if err != nil {
+			fmt.Printf("[LLM ERROR] Marshal failed: %v\n", err)
+		} else {
+			fmt.Printf("[LLM INFO] Calling external API Base: %s URL: %s Model: %s\n", a.apiBase, targetURL, a.model)
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(jsonBytes))
-			if err == nil {
+			if err != nil {
+				fmt.Printf("[LLM ERROR] Request creation failed: %v\n", err)
+			} else {
 				req.Header.Set("Content-Type", "application/json")
 				if a.apiKey != "" {
+					fmt.Printf("[LLM INFO] Auth token provided (length: %d)\n", len(a.apiKey))
 					req.Header.Set("Authorization", "Bearer "+a.apiKey)
+				} else {
+					fmt.Printf("[LLM WARNING] No LLM_API_KEY provided!\n")
 				}
 				resp, err := a.client.Do(req)
-				if err == nil && resp.StatusCode == http.StatusOK {
-					var completionResp chatCompletionResponse
-					if err := json.NewDecoder(resp.Body).Decode(&completionResp); err == nil && len(completionResp.Choices) > 0 {
-						optimized = strings.TrimSpace(completionResp.Choices[0].Message.Content)
+				if err != nil {
+					fmt.Printf("[LLM ERROR] API call failed: %v\n", err)
+				} else {
+					defer resp.Body.Close()
+					fmt.Printf("[LLM INFO] API response status: %s (code: %d)\n", resp.Status, resp.StatusCode)
+					if resp.StatusCode == http.StatusOK {
+						var completionResp chatCompletionResponse
+						if err := json.NewDecoder(resp.Body).Decode(&completionResp); err == nil && len(completionResp.Choices) > 0 {
+							optimized = strings.TrimSpace(completionResp.Choices[0].Message.Content)
+							fmt.Printf("[LLM INFO] Optimization successful! Length: %d\n", len(optimized))
+						} else if err != nil {
+							fmt.Printf("[LLM ERROR] Decode response failed: %v\n", err)
+						} else {
+							fmt.Printf("[LLM ERROR] No choices returned from model\n")
+						}
+					} else {
+						buf := new(bytes.Buffer)
+						_, _ = buf.ReadFrom(resp.Body)
+						fmt.Printf("[LLM ERROR] API response error body: %s\n", buf.String())
 					}
-					resp.Body.Close()
 				}
 			}
 		}

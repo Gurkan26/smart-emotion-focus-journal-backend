@@ -210,15 +210,52 @@ def fetch_journals_from_db(args):
         return []
 
 
+def load_prompt_dataset_csv():
+    csv_path = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "prompt_dataset.csv"))
+    if not os.path.exists(csv_path):
+        print(f"[!] Warning: prompt_dataset.csv not found at {csv_path}")
+        return []
+    
+    samples = []
+    try:
+        import csv
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader) # Skip header
+            for row in reader:
+                if len(row) < 3:
+                    continue
+                original = row[0].strip()
+                template = row[1].strip()
+                optimized = row[2].strip()
+                
+                output_obj = {
+                    "original_prompt": original,
+                    "optimized_prompt": optimized,
+                    "template_used": template
+                }
+                samples.append({
+                    "instruction": "Optimize the given prompt for better cognitive load analysis and emotional state extraction.",
+                    "input": original,
+                    "output": json.dumps(output_obj, ensure_ascii=False)
+                })
+        print(f"[+] Loaded {len(samples)} prompt optimization entries from prompt_dataset.csv")
+    except Exception as e:
+        print(f"[!] Error loading prompt_dataset.csv: {e}")
+    return samples
+
+
 def generate(args):
-    """Generate JSONL dataset from DB data + fallback samples."""
+    """Generate JSONL dataset from DB data + CSV data + fallback samples."""
     db_samples = []
 
     if not args.skip_db:
         db_samples = fetch_journals_from_db(args)
 
-    # Always include fallback samples as a baseline
-    all_samples = db_samples + FALLBACK_SAMPLES
+    csv_samples = load_prompt_dataset_csv()
+
+    # Combine all samples
+    all_samples = db_samples + csv_samples + FALLBACK_SAMPLES
 
     # Deduplicate by input text
     seen_inputs = set()
@@ -239,6 +276,7 @@ def generate(args):
     print(f"{'=' * 60}")
     print(f"[+] Total samples      : {len(unique_samples)}")
     print(f"[+] From database       : {len(db_samples)}")
+    print(f"[+] From prompt CSV     : {len(csv_samples)}")
     print(f"[+] Built-in fallback   : {len(FALLBACK_SAMPLES)}")
     print(f"[+] Output file         : {args.output}")
     print(f"{'=' * 60}")

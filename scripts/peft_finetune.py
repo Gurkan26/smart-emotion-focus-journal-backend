@@ -148,6 +148,7 @@ def parse_args():
     parser.add_argument("--adapter-name", type=str, default="gemma-journal-custom-lora", help="Output PEFT adapter name")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Directory to save adapter weights")
     parser.add_argument("--force-cpu", action="store_true", help="Force CPU training even if CUDA is available")
+    parser.add_argument("--token", type=str, default=os.getenv("HF_TOKEN"), help="HuggingFace API token for gated models")
     return parser.parse_args()
 
 
@@ -198,9 +199,11 @@ def main():
         "message": f"Initializing model '{args.model}' and PEFT LoRA configuration..."
     })
 
+    token = args.token or os.getenv("HF_TOKEN")
+
     # ---- Load Tokenizer ----
     print("\n[1/5] Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, token=token)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     print(f"      Tokenizer loaded. Vocab size: {tokenizer.vocab_size}")
@@ -220,6 +223,7 @@ def main():
 
     model_kwargs = {
         "trust_remote_code": True,
+        "token": token,
     }
 
     # For CUDA devices with limited VRAM, use float16
