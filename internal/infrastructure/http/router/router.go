@@ -126,6 +126,10 @@ func New(deps Dependencies) *chi.Mux {
 			r.Delete("/monitor/clear", deps.JournalHandler.ClearMetrics)
 
 			// Admin & MCP Panel Endpoints
+			r.Get("/admin/users", deps.JournalHandler.ListUsers)
+			r.Put("/admin/users/role", deps.JournalHandler.UpdateUserRole)
+			r.Post("/admin/users/role", deps.JournalHandler.UpdateUserRole)
+
 			if deps.AdminHandler != nil {
 				r.Get("/admin/config", deps.AdminHandler.GetConfig)
 				r.Put("/admin/config", deps.AdminHandler.UpdateConfig)

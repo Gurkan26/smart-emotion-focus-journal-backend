@@ -42,11 +42,12 @@ var (
 )
 
 type UserRecord struct {
-	ID           uint
-	Email        string
-	PasswordHash string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID           uint      `json:"id"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"`
+	IsAdmin      bool      `json:"is_admin"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type Handler struct {
@@ -59,10 +60,38 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 		analyzer: llm.NewAnalyzer(),
 		db:       db,
 	}
+	h.seedAdminAccount()
 	if db != nil {
 		h.ensureTables(context.Background())
 	}
 	return h
+}
+
+func (h *Handler) seedAdminAccount() {
+	adminEmail := "gurkansenturk@admin.com"
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	if err != nil {
+		return
+	}
+
+	memUsersMu.Lock()
+	if _, exists := memUsers[adminEmail]; !exists {
+		memUsers[adminEmail] = UserRecord{
+			ID:           memUserCounter,
+			Email:        adminEmail,
+			PasswordHash: string(hashedPassword),
+			IsAdmin:      true,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		}
+		memUserCounter++
+	} else {
+		u := memUsers[adminEmail]
+		u.IsAdmin = true
+		u.PasswordHash = string(hashedPassword)
+		memUsers[adminEmail] = u
+	}
+	memUsersMu.Unlock()
 }
 
 func (h *Handler) ensureTables(ctx context.Context) {
@@ -71,6 +100,7 @@ func (h *Handler) ensureTables(ctx context.Context) {
 			id              BIGSERIAL PRIMARY KEY,
 			email           VARCHAR(255) NOT NULL UNIQUE,
 			password_hash   VARCHAR(255) NOT NULL,
+			is_admin        BOOLEAN NOT NULL DEFAULT false,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			deleted_at      TIMESTAMPTZ DEFAULT NULL
@@ -107,11 +137,28 @@ func (h *Handler) ensureTables(ctx context.Context) {
 		`CREATE INDEX IF NOT EXISTS idx_llm_metrics_user_id ON llm_metrics(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_active_sessions_user_id ON active_sessions(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_journal_users_deleted_at ON journal_users(deleted_at);`,
-		// Ensure deleted_at column exists for existing tables
 		`ALTER TABLE journal_users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL;`,
+		`ALTER TABLE journal_users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;`,
 	}
 	for _, q := range queries {
 		_, _ = h.db.Exec(ctx, q)
+	}
+
+	// Seed hardcoded admin account into DB
+	adminEmail := "gurkansenturk@admin.com"
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	if err == nil {
+		var exists bool
+		_ = h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM journal_users WHERE email = $1)`, adminEmail).Scan(&exists)
+		if !exists {
+			_, _ = h.db.Exec(ctx,
+				`INSERT INTO journal_users (email, password_hash, is_admin, created_at, updated_at) VALUES ($1, $2, true, NOW(), NOW())`,
+				adminEmail, string(hashedPassword))
+		} else {
+			_, _ = h.db.Exec(ctx,
+				`UPDATE journal_users SET is_admin = true, password_hash = $1 WHERE email = $2`,
+				string(hashedPassword), adminEmail)
+		}
 	}
 }
 
@@ -140,6 +187,31 @@ func (h *Handler) getUserIDFromRequest(r *http.Request) (uint, bool) {
 		}
 	}
 	return 0, false
+}
+
+func (h *Handler) isUserAdmin(r *http.Request) (uint, bool) {
+	userID, ok := h.getUserIDFromRequest(r)
+	if !ok || userID == 0 {
+		return 0, false
+	}
+
+	if h.db != nil {
+		var isAdmin bool
+		err := h.db.QueryRow(r.Context(), `SELECT is_admin FROM journal_users WHERE id = $1 AND deleted_at IS NULL`, userID).Scan(&isAdmin)
+		if err == nil && isAdmin {
+			return userID, true
+		}
+		return userID, false
+	}
+
+	memUsersMu.RLock()
+	defer memUsersMu.RUnlock()
+	for _, u := range memUsers {
+		if u.ID == userID {
+			return userID, u.IsAdmin
+		}
+	}
+	return userID, false
 }
 
 func sendError(w http.ResponseWriter, status int, codeStr, msg string) {
@@ -215,6 +287,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	emailClean := strings.TrimSpace(strings.ToLower(input.Email))
+	isAdmin := (emailClean == "gurkansenturk@admin.com")
 
 	if h.db != nil {
 		// Check if email exists and is active (not soft-deleted)
@@ -230,19 +303,25 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 		var newID uint
 		err := h.db.QueryRow(r.Context(),
-			`INSERT INTO journal_users (email, password_hash, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) RETURNING id`,
-			emailClean, string(hashed)).Scan(&newID)
+			`INSERT INTO journal_users (email, password_hash, is_admin, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW()) RETURNING id`,
+			emailClean, string(hashed), isAdmin).Scan(&newID)
 		if err != nil {
 			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to register user in database")
 			return
 		}
 
-		// No dual-write to in-memory cache when PostgreSQL is available
+		roleStr := "user"
+		if isAdmin {
+			roleStr = "admin"
+		}
+
 		response.JSON(w, http.StatusCreated, map[string]interface{}{
 			"message": "User registered successfully",
 			"user": map[string]interface{}{
-				"id":    newID,
-				"email": emailClean,
+				"id":       newID,
+				"email":    emailClean,
+				"is_admin": isAdmin,
+				"role":     roleStr,
 			},
 		})
 		return
@@ -260,17 +339,25 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		ID:           memUserCounter,
 		Email:        emailClean,
 		PasswordHash: string(hashed),
+		IsAdmin:      isAdmin,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
 	memUserCounter++
 	memUsers[emailClean] = user
 
+	roleStr := "user"
+	if isAdmin {
+		roleStr = "admin"
+	}
+
 	response.JSON(w, http.StatusCreated, map[string]interface{}{
 		"message": "User registered successfully",
 		"user": map[string]interface{}{
-			"id":    user.ID,
-			"email": user.Email,
+			"id":       user.ID,
+			"email":    user.Email,
+			"is_admin": isAdmin,
+			"role":     roleStr,
 		},
 	})
 }
@@ -286,10 +373,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	var userID uint
 	var dbPasswordHash string
+	var isAdmin bool
 
 	if h.db != nil {
 		// Only allow login for active (non-deleted) accounts
-		err := h.db.QueryRow(r.Context(), `SELECT id, password_hash FROM journal_users WHERE email = $1 AND deleted_at IS NULL`, emailClean).Scan(&userID, &dbPasswordHash)
+		err := h.db.QueryRow(r.Context(), `SELECT id, password_hash, is_admin FROM journal_users WHERE email = $1 AND deleted_at IS NULL`, emailClean).Scan(&userID, &dbPasswordHash, &isAdmin)
 		if err != nil {
 			sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
 			return
@@ -305,6 +393,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		userID = user.ID
 		dbPasswordHash = user.PasswordHash
+		isAdmin = user.IsAdmin
+	}
+
+	if emailClean == "gurkansenturk@admin.com" {
+		isAdmin = true
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(dbPasswordHash), []byte(input.Password)); err != nil {
@@ -322,11 +415,18 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	ActiveSessions[token] = userID
 	ActiveSessionsMu.Unlock()
 
+	roleStr := "user"
+	if isAdmin {
+		roleStr = "admin"
+	}
+
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"token": token,
 		"user": map[string]interface{}{
-			"id":    userID,
-			"email": emailClean,
+			"id":       userID,
+			"email":    emailClean,
+			"is_admin": isAdmin,
+			"role":     roleStr,
 		},
 	})
 }
@@ -384,14 +484,16 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	email := "demo@masterfabric.co"
 	createdAt := time.Now()
+	isAdmin := false
 
 	if h.db != nil {
-		_ = h.db.QueryRow(r.Context(), `SELECT email, created_at FROM journal_users WHERE id = $1`, userID).Scan(&email, &createdAt)
+		_ = h.db.QueryRow(r.Context(), `SELECT email, is_admin, created_at FROM journal_users WHERE id = $1`, userID).Scan(&email, &isAdmin, &createdAt)
 	} else {
 		memUsersMu.RLock()
 		for _, u := range memUsers {
 			if u.ID == userID {
 				email = u.Email
+				isAdmin = u.IsAdmin
 				createdAt = u.CreatedAt
 				break
 			}
@@ -399,14 +501,132 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		memUsersMu.RUnlock()
 	}
 
+	if email == "gurkansenturk@admin.com" {
+		isAdmin = true
+	}
+
+	roleStr := "user"
+	if isAdmin {
+		roleStr = "admin"
+	}
+
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"id":         userID,
 		"email":      email,
+		"is_admin":   isAdmin,
+		"role":       roleStr,
 		"created_at": createdAt,
 		"config": map[string]interface{}{
 			"theme":         "dark",
 			"notifications": true,
 		},
+	})
+}
+
+// --- Admin User Management Endpoints ---
+
+func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	_, isAdmin := h.isUserAdmin(r)
+	if !isAdmin {
+		sendError(w, http.StatusForbidden, "FORBIDDEN", "Admin privileges required")
+		return
+	}
+
+	type UserDTO struct {
+		ID        uint      `json:"id"`
+		Email     string    `json:"email"`
+		IsAdmin   bool      `json:"is_admin"`
+		Role      string    `json:"role"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+
+	users := []UserDTO{}
+
+	if h.db != nil {
+		rows, err := h.db.Query(r.Context(), `SELECT id, email, is_admin, created_at FROM journal_users WHERE deleted_at IS NULL ORDER BY id ASC`)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var u UserDTO
+				if err := rows.Scan(&u.ID, &u.Email, &u.IsAdmin, &u.CreatedAt); err == nil {
+					if u.IsAdmin || u.Email == "gurkansenturk@admin.com" {
+						u.IsAdmin = true
+						u.Role = "admin"
+					} else {
+						u.Role = "user"
+					}
+					users = append(users, u)
+				}
+			}
+			response.JSON(w, http.StatusOK, users)
+			return
+		}
+	}
+
+	memUsersMu.RLock()
+	defer memUsersMu.RUnlock()
+	for _, u := range memUsers {
+		roleStr := "user"
+		isAdminVal := u.IsAdmin
+		if u.Email == "gurkansenturk@admin.com" {
+			isAdminVal = true
+		}
+		if isAdminVal {
+			roleStr = "admin"
+		}
+		users = append(users, UserDTO{
+			ID:        u.ID,
+			Email:     u.Email,
+			IsAdmin:   isAdminVal,
+			Role:      roleStr,
+			CreatedAt: u.CreatedAt,
+		})
+	}
+
+	response.JSON(w, http.StatusOK, users)
+}
+
+type UpdateUserRoleInput struct {
+	UserID  uint `json:"user_id"`
+	IsAdmin bool `json:"is_admin"`
+}
+
+func (h *Handler) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
+	_, isAdmin := h.isUserAdmin(r)
+	if !isAdmin {
+		sendError(w, http.StatusForbidden, "FORBIDDEN", "Admin privileges required")
+		return
+	}
+
+	var input UpdateUserRoleInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.UserID == 0 {
+		sendError(w, http.StatusBadRequest, "INVALID_INPUT", "User ID and admin status are required")
+		return
+	}
+
+	if h.db != nil {
+		_, err := h.db.Exec(r.Context(), `UPDATE journal_users SET is_admin = $1, updated_at = NOW() WHERE id = $2`, input.IsAdmin, input.UserID)
+		if err != nil {
+			sendError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to update user role in database")
+			return
+		}
+	}
+
+	memUsersMu.Lock()
+	for email, u := range memUsers {
+		if u.ID == input.UserID {
+			u.IsAdmin = input.IsAdmin
+			u.UpdatedAt = time.Now()
+			memUsers[email] = u
+			break
+		}
+	}
+	memUsersMu.Unlock()
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"message":  "User admin role updated successfully",
+		"user_id":  input.UserID,
+		"is_admin": input.IsAdmin,
 	})
 }
 
