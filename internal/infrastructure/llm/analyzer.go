@@ -340,7 +340,6 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 	var optimized string
 	var latencyMs int64
 
-	// 1. Hugging Face Datasets Server REST API Direct Query (MasterFabric Academy Section 4)
 	hfDatasetRepo := os.Getenv("HF_DATASET_REPO")
 	if hfDatasetRepo == "" {
 		hfDatasetRepo = "Gurkan26/enterprise-prompt-optimizer"
@@ -348,13 +347,21 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 	hfToken := os.Getenv("HF_TOKEN")
 	dsClient := dataset.NewClient(hfToken)
 
+	fmt.Printf("[DATASET INFO] Querying Hugging Face dataset: %s\n", hfDatasetRepo)
 	dsData, dsErr := dsClient.FetchFirstRows(ctx, hfDatasetRepo)
-	if dsErr == nil && dsData != nil {
+	if dsErr != nil {
+		fmt.Printf("[DATASET WARNING] Dataset fetch failed: %v. Proceeding to LLM / Fallback.\n", dsErr)
+	} else if dsData != nil {
+		fmt.Printf("[DATASET INFO] Successfully fetched %d rows from Hugging Face dataset.\n", len(dsData.Rows))
 		for _, item := range dsData.Rows {
 			if strings.EqualFold(strings.TrimSpace(item.Row.OriginalPrompt), cleanPrompt) {
 				optimized = item.Row.OptimizedPrompt
+				fmt.Printf("[DATASET INFO] Exact match found in dataset! Using pre-optimized prompt.\n")
 				break
 			}
+		}
+		if optimized == "" {
+			fmt.Printf("[DATASET INFO] No exact match found in dataset. Proceeding to LLM / Fallback.\n")
 		}
 	}
 
@@ -504,7 +511,7 @@ func fallbackOptimize(prompt, template, customInst string) string {
 	case "code":
 		lower := strings.ToLower(clean)
 		if strings.Contains(lower, "modal") || strings.Contains(lower, "component") || strings.Contains(lower, "bileşen") {
-			return fmt.Sprintf("%s. Aşağıdaki gereksinimleri karşılamalı:\n\n- Açılıp kapanırken yumuşak animasyon (tercihen framer-motion veya CSS transition/fade ile)\n- Dark mode uyumu: CSS değişkenleri veya bir Theme Context ile arka plan ve metin renkleri otomatik değişmeli\n- Erişilebilirlik (A11y): role=\"dialog\", aria-modal=\"true\", klavyeden Escape tuşu ile kapanma ve overlay tıklaması kontrolü\n- Props arayüzü: { isOpen, onClose, children, title? }\n- Bileşen kendi stilini içermeli (CSS modülü, Tailwind veya styled-components) ve örnek bir kullanım sunulmalı\n- Çıktı olarak tam çalışan fonksiyonel bileşeni (JSX/TSX + stiller birlikte) ver.", clean)
+			return fmt.Sprintf("%s. Aşağıdaki gereksinimleri karşılamalı:\n\n- (tercihen framer-motion veya CSS transition/fade ile)\n- Dark mode uyumu: CSS değişkenleri veya bir Theme Context ile arka plan ve metin renkleri otomatik değişmeli\n- Erişilebilirlik (A11y): role=\"dialog\", aria-modal=\"true\", klavyeden Escape tuşu ile kapanma ve overlay tıklaması kontrolü\n- Props arayüzü: { isOpen, onClose, children, title? }\n- Bileşen kendi stilini içermeli (CSS modülü, Tailwind veya styled-components) ve örnek bir kullanım sunulmalı\n- Çıktı olarak tam çalışan fonksiyonel bileşeni (JSX/TSX + stiller birlikte) ver.", clean)
 		}
 		return fmt.Sprintf("%s. Aşağıdaki teknik gereksinimleri tam karşılamalı:\n\n- Üretim seviyesinde (production-ready), temiz mimariye ve modüler standartlara uygun yapı\n- Eksiksiz tip tanımları (TypeScript/Strongly-typed) ve parametre arayüzleri\n- Hata yönetimi (error handling), kenar durum (edge-case) dayanıklılığı ve performans optimizasyonu\n- Çıktı olarak çalıştırılabilir eksiksiz kod bloğu ve kısa mimari açıklama sunulmalı.", clean)
 
