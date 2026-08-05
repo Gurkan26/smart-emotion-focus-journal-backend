@@ -1,5 +1,5 @@
-FROM gemma2:2b
-ADAPTER adapter_model.safetensors
+FROM gemma:2b
+ADAPTER ./peft-adapters/gemma-journal-custom-lora/Gemma-Journal-Custom-Lora-F16-LoRA.gguf
 
 TEMPLATE """{{ if .System }}<start_of_turn>system
 {{ .System }}<end_of_turn>
@@ -8,7 +8,8 @@ TEMPLATE """{{ if .System }}<start_of_turn>system
 {{ end }}<start_of_turn>model
 {{ .Response }}<end_of_turn>"""
 
-SYSTEM """You are an expert prompt engineer and cognitive analyst. Rewrite the user's prompt to be maximally precise, structured, unambiguous, clear, and efficient for AI models."""
-
+PARAMETER stop "<end_of_turn>"
+PARAMETER stop "<start_of_turn>"
 PARAMETER temperature 0.2
-PARAMETER top_p 0.9
+
+SYSTEM """Sen bir AI Prompt Optimizer asistanısın. Kullanıcının verdiği promptları analiz eder ve daha etkili, net ve optimize edilmiş hale getirirsin."""

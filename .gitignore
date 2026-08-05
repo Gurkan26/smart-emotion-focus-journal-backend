@@ -43,3 +43,12 @@ tmp/
 
 # Air hot-reload
 bin/air
+
+# AI Models & Fine-Tuning Artifacts
+*.safetensors
+*.gguf
+*.bin
+gemma-journal-merged/
+peft-adapters/
+llama.cpp/
+

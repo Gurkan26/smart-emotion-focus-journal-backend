@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/learning"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/mcp"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/shared/response"
 )
@@ -39,8 +40,13 @@ type Handler struct {
 	db              *pgxpool.Pool
 	wikiMCP         *mcp.DeepWikiMCP
 	mcpSuite        *mcp.MCPServerSuite
+	collector       *learning.Collector
 	telemetryMu     sync.RWMutex
 	latestTelemetry FineTuneTelemetryDTO
+}
+
+func (h *Handler) SetCollector(c *learning.Collector) {
+	h.collector = c
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
@@ -492,4 +498,42 @@ func (h *Handler) ExecuteMCPSuite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, http.StatusOK, res)
+}
+
+// GetLearningStats returns stats about continuous learning collector buffer.
+func (h *Handler) GetLearningStats(w http.ResponseWriter, r *http.Request) {
+	if h.collector == nil {
+		response.JSON(w, http.StatusOK, map[string]interface{}{
+			"continuousLearning": false,
+			"message":            "Collector not attached",
+		})
+		return
+	}
+	response.JSON(w, http.StatusOK, h.collector.GetStats())
+}
+
+// FlushLearningDataset manually flushes approved interactions to the JSONL dataset.
+func (h *Handler) FlushLearningDataset(w http.ResponseWriter, r *http.Request) {
+	if h.collector == nil {
+		response.JSON(w, http.StatusBadRequest, map[string]string{"error": "Collector not initialized"})
+		return
+	}
+	count, err := h.collector.FlushToDataset()
+	if err != nil {
+		response.JSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"flushed": count,
+		"message": fmt.Sprintf("Successfully flushed %d high-quality user interaction examples to fine-tuning dataset", count),
+	})
+}
+
+// GetPendingLearningData returns raw buffered interactions for admin inspection.
+func (h *Handler) GetPendingLearningData(w http.ResponseWriter, r *http.Request) {
+	if h.collector == nil {
+		response.JSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+	response.JSON(w, http.StatusOK, h.collector.GetPendingInteractions())
 }

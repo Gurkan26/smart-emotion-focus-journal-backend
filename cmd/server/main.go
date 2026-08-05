@@ -202,14 +202,18 @@ func buildDependencies(
 	redisClient *redis.Client,
 	eventBus events.EventBus,
 ) router.Dependencies {
+	jHandler := journalHandler.NewHandler(db)
+	aHandler := adminHandler.NewHandler(db)
+	aHandler.SetCollector(jHandler.GetCollector())
+
 	deps := router.Dependencies{
 		Logger:             log,
 		DB:                 db,
 		Redis:              redisClient,
 		CORSAllowedOrigins: cfg.Server.CORSAllowedOrigins,
 		MaxBodyBytes:       cfg.Server.MaxBodyBytes,
-		JournalHandler:     journalHandler.NewHandler(db),
-		AdminHandler:       adminHandler.NewHandler(db),
+		JournalHandler:     jHandler,
+		AdminHandler:       aHandler,
 	}
 
 	// --- Services ---

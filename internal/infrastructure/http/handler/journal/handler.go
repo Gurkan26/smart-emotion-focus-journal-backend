@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/domain/journal/entity"
+	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/learning"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/llm"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/shared/response"
 	"golang.org/x/crypto/bcrypt"
@@ -51,20 +52,26 @@ type UserRecord struct {
 }
 
 type Handler struct {
-	analyzer *llm.Analyzer
-	db       *pgxpool.Pool
+	analyzer  *llm.Analyzer
+	collector *learning.Collector
+	db        *pgxpool.Pool
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
 	h := &Handler{
-		analyzer: llm.NewAnalyzer(),
-		db:       db,
+		analyzer:  llm.NewAnalyzer(),
+		collector: learning.NewCollector("", 25),
+		db:        db,
 	}
 	h.seedAdminAccount()
 	if db != nil {
 		h.ensureTables(context.Background())
 	}
 	return h
+}
+
+func (h *Handler) GetCollector() *learning.Collector {
+	return h.collector
 }
 
 func (h *Handler) seedAdminAccount() {
@@ -879,6 +886,11 @@ func (h *Handler) AnalyzeJournal(w http.ResponseWriter, r *http.Request) {
 		memMetricsMu.Unlock()
 	}
 
+	// Record interaction in continuous learning collector
+	if h.collector != nil {
+		h.collector.RecordAnalysis(userID, input.Content, result.CognitiveLoad, result.Suggestion)
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }
 
@@ -1211,6 +1223,11 @@ func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
 			`INSERT INTO prompt_optimizations (user_id, original_prompt, optimized_prompt, template, custom_instruction, original_tokens, optimized_tokens, latency_ms, created_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
 			userID, result.OriginalPrompt, result.OptimizedPrompt, result.Template, result.CustomInstruction, result.OriginalTokens, result.OptimizedTokens, result.Metrics.LatencyMs)
+	}
+
+	// Record interaction in continuous learning collector
+	if h.collector != nil {
+		h.collector.RecordOptimization(userID, result.OriginalPrompt, result.OptimizedPrompt, result.Template, result.ThinkingProcess)
 	}
 
 	response.JSON(w, http.StatusOK, result)

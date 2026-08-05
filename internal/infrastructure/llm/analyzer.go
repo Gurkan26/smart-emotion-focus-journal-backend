@@ -16,6 +16,53 @@ import (
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/dataset"
 )
 
+// ---------------------------------------------------------------------------
+// Thinking/Output Tag Parser
+// ---------------------------------------------------------------------------
+
+// ParsedLLMResponse separates the model's internal reasoning (<thinking>)
+// from the user-facing result (<output>). This is critical for fine-tuned
+// models trained on XML self-thinking datasets.
+type ParsedLLMResponse struct {
+	Thinking string // Content inside <thinking>...</thinking> (internal reasoning)
+	Output   string // Content inside <output>...</output> (user-facing result)
+	Raw      string // Original unmodified model response
+}
+
+var (
+	reThinking = regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
+	reOutput   = regexp.MustCompile(`(?s)<output>(.*?)</output>`)
+)
+
+// parseThinkingOutput extracts <thinking> and <output> sections from a
+// fine-tuned model response. If tags are missing, falls back to raw text.
+func parseThinkingOutput(raw string) ParsedLLMResponse {
+	result := ParsedLLMResponse{Raw: raw}
+
+	// Extract <thinking> content
+	if m := reThinking.FindStringSubmatch(raw); len(m) > 1 {
+		result.Thinking = strings.TrimSpace(m[1])
+	}
+
+	// Extract <output> content
+	if m := reOutput.FindStringSubmatch(raw); len(m) > 1 {
+		result.Output = strings.TrimSpace(m[1])
+	}
+
+	// Fallback: if no <output> tags, strip <thinking> block and use the rest
+	if result.Output == "" {
+		cleaned := reThinking.ReplaceAllString(raw, "")
+		cleaned = strings.TrimSpace(cleaned)
+		if cleaned != "" {
+			result.Output = cleaned
+		} else {
+			result.Output = raw
+		}
+	}
+
+	return result
+}
+
 type AnalysisResult struct {
 	CognitiveLoad   int              `json:"cognitiveLoad"`
 	FocusLevel      int              `json:"focusLevel"`
@@ -174,6 +221,14 @@ func (a *Analyzer) callExternalLLM(ctx context.Context, content string, startTim
 	}
 
 	rawReply := strings.TrimSpace(completionResp.Choices[0].Message.Content)
+
+	// Parse <thinking>/<output> tags from fine-tuned model responses
+	parsed := parseThinkingOutput(rawReply)
+	if parsed.Thinking != "" {
+		fmt.Printf("[LLM THINKING] Journal analysis reasoning: %s\n", parsed.Thinking)
+	}
+	cleanReply := parsed.Output
+
 	latencyMs := time.Since(startTime).Milliseconds()
 
 	promptTokens := completionResp.Usage.PromptTokens
@@ -182,11 +237,11 @@ func (a *Analyzer) callExternalLLM(ctx context.Context, content string, startTim
 	}
 	completionTokens := completionResp.Usage.CompletionTokens
 	if completionTokens == 0 {
-		completionTokens = len(rawReply)/4 + 5
+		completionTokens = len(cleanReply)/4 + 5
 	}
 	totalTokens := promptTokens + completionTokens
 
-	return parseReplyToResult(content, rawReply, latencyMs, promptTokens, completionTokens, totalTokens), nil
+	return parseReplyToResult(content, cleanReply, latencyMs, promptTokens, completionTokens, totalTokens), nil
 }
 
 var (
@@ -325,6 +380,7 @@ func parseReplyToResult(content, replyText string, latencyMs int64, promptTokens
 type OptimizationResult struct {
 	OriginalPrompt    string           `json:"originalPrompt"`
 	OptimizedPrompt   string           `json:"optimizedPrompt"`
+	ThinkingProcess   string           `json:"thinkingProcess,omitempty"`
 	Template          string           `json:"template"`
 	CustomInstruction string           `json:"customInstruction,omitempty"`
 	OriginalTokens    int              `json:"originalTokens"`
@@ -425,8 +481,14 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 					if resp.StatusCode == http.StatusOK {
 						var completionResp chatCompletionResponse
 						if err := json.NewDecoder(resp.Body).Decode(&completionResp); err == nil && len(completionResp.Choices) > 0 {
-							optimized = strings.TrimSpace(completionResp.Choices[0].Message.Content)
-							fmt.Printf("[LLM INFO] Optimization successful! Length: %d\n", len(optimized))
+							rawLLMOutput := strings.TrimSpace(completionResp.Choices[0].Message.Content)
+							// Parse <thinking>/<output> tags from fine-tuned model
+							parsedResp := parseThinkingOutput(rawLLMOutput)
+							optimized = parsedResp.Output
+							if parsedResp.Thinking != "" {
+								fmt.Printf("[LLM THINKING] Model reasoning: %s\n", parsedResp.Thinking)
+							}
+							fmt.Printf("[LLM INFO] Optimization successful! Raw: %d, Parsed output: %d\n", len(rawLLMOutput), len(optimized))
 						} else if err != nil {
 							fmt.Printf("[LLM ERROR] Decode response failed: %v\n", err)
 						} else {
@@ -447,6 +509,11 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 		optimized = fallbackOptimize(cleanPrompt, template, customInst)
 	}
 
+	// Final pass: ensure any remaining <thinking> tags are parsed out
+	finalParsed := parseThinkingOutput(optimized)
+	thinkingLog := finalParsed.Thinking
+	optimized = finalParsed.Output
+
 	latencyMs = time.Since(startTime).Milliseconds()
 	if latencyMs == 0 {
 		latencyMs = 45
@@ -465,10 +532,14 @@ func (a *Analyzer) OptimizePrompt(ctx context.Context, rawPrompt, template, cust
 	}
 
 	explanation := fmt.Sprintf("Optimized using template '%s'. Reduced redundant context and improved AI instruction clarity.", template)
+	if thinkingLog != "" {
+		explanation = fmt.Sprintf("%s Model reasoning: %s", explanation, thinkingLog)
+	}
 
 	return &OptimizationResult{
 		OriginalPrompt:    cleanPrompt,
 		OptimizedPrompt:   optimized,
+		ThinkingProcess:   thinkingLog,
 		Template:          template,
 		CustomInstruction: customInst,
 		OriginalTokens:    origTokens,

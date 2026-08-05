@@ -141,6 +141,9 @@ func New(deps Dependencies) *chi.Mux {
 				r.Get("/admin/finetune/status", deps.AdminHandler.GetFineTuneStatus)
 				r.Post("/admin/finetune/start", deps.AdminHandler.StartFineTune)
 				r.Get("/admin/finetune/history", deps.AdminHandler.GetFineTuneHistory)
+				r.Get("/admin/learning/stats", deps.AdminHandler.GetLearningStats)
+				r.Post("/admin/learning/flush", deps.AdminHandler.FlushLearningDataset)
+				r.Get("/admin/learning/pending", deps.AdminHandler.GetPendingLearningData)
 			}
 		})
 	}
