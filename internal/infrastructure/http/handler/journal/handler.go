@@ -1217,6 +1217,66 @@ func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
 		input.Template = "accurate"
 	}
 
+	// Run through Agent Harness (ReAct Loop)
+	if h.harness != nil {
+		goal := fmt.Sprintf("Act as an expert prompt engineer. Rewrite, expand, and optimize this raw user prompt into a high-quality prompt specification using template '%s'. DO NOT write code or answer the prompt directly! Raw Prompt: %s", input.Template, input.Prompt)
+		if input.CustomInstruction != "" {
+			goal = fmt.Sprintf("%s (Custom Instruction: %s)", goal, input.CustomInstruction)
+		}
+
+		task := h.harness.Execute(r.Context(), userID, goal)
+		if task != nil && task.Status == "COMPLETED" && strings.TrimSpace(task.Result) != "" {
+			origTokens := len(input.Prompt)/4 + 1
+			optTokens := len(task.Result)/4 + 1
+			savingsPct := 0.0
+			if origTokens > optTokens {
+				savingsPct = float64(origTokens-optTokens) / float64(origTokens) * 100.0
+			}
+
+			var thinkingSteps []string
+			for _, s := range task.Steps {
+				if s.Phase == "THINK" {
+					thinkingSteps = append(thinkingSteps, fmt.Sprintf("[Step %d] %s", s.Index, s.Output))
+				}
+			}
+			thinkingStr := strings.Join(thinkingSteps, "\n")
+
+			result := &llm.OptimizationResult{
+				OriginalPrompt:    input.Prompt,
+				OptimizedPrompt:   task.Result,
+				ThinkingProcess:   thinkingStr,
+				Template:          input.Template,
+				CustomInstruction: input.CustomInstruction,
+				OriginalTokens:    origTokens,
+				OptimizedTokens:   optTokens,
+				TokenSavingsPct:   savingsPct,
+				Explanation:       fmt.Sprintf("Optimized via ReAct Agent Harness (%d steps, trajectory score: %.2f)", len(task.Steps), task.Score),
+				Metrics: llm.ExecutionMetrics{
+					LatencyMs:        task.Duration,
+					PromptTokens:     origTokens,
+					CompletionTokens: optTokens,
+					TotalTokens:      origTokens + optTokens,
+					InferenceTimeSec: fmt.Sprintf("%.2f", float64(task.Duration)/1000.0),
+					TokensSec:        fmt.Sprintf("%.1f", float64(origTokens+optTokens)/(float64(task.Duration)/1000.0+0.001)),
+				},
+			}
+
+			if h.db != nil {
+				_, _ = h.db.Exec(r.Context(),
+					`INSERT INTO prompt_optimizations (user_id, original_prompt, optimized_prompt, template, custom_instruction, original_tokens, optimized_tokens, latency_ms, created_at)
+					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+					userID, result.OriginalPrompt, result.OptimizedPrompt, result.Template, result.CustomInstruction, result.OriginalTokens, result.OptimizedTokens, result.Metrics.LatencyMs)
+			}
+
+			if h.collector != nil {
+				h.collector.RecordOptimization(userID, result.OriginalPrompt, result.OptimizedPrompt, result.Template, result.ThinkingProcess)
+			}
+
+			response.JSON(w, http.StatusOK, result)
+			return
+		}
+	}
+
 	result, err := h.analyzer.OptimizePrompt(r.Context(), input.Prompt, input.Template, input.CustomInstruction)
 	if err != nil {
 		sendError(w, http.StatusInternalServerError, "OPTIMIZATION_FAILED", "Failed to optimize prompt")

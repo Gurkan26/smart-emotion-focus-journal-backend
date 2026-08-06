@@ -48,12 +48,7 @@ func (t *OptimizePromptTool) Execute(ctx context.Context, args map[string]interf
 		return &ToolResult{Success: false, Error: err.Error()}, nil
 	}
 
-	data := fmt.Sprintf(
-		"Template: %s, OriginalTokens: %d, OptimizedTokens: %d, Savings: %.1f%%\n\nOptimized Prompt:\n%s",
-		result.Template, result.OriginalTokens, result.OptimizedTokens,
-		result.TokenSavingsPct, result.OptimizedPrompt,
-	)
-
+	data := result.OptimizedPrompt
 	return &ToolResult{Success: true, Data: data}, nil
 }
 

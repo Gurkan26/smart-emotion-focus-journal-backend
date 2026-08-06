@@ -260,6 +260,13 @@ func (h *Harness) Execute(ctx context.Context, userID uint, goal string) *AgentT
 		})
 		messages = append(messages, ChatMessage{Role: "tool", Content: observation})
 
+		// If prompt optimization tool succeeded, complete task immediately with clean output
+		if toolResult.Success && (strings.ToLower(toolName) == "optimize_prompt" || strings.TrimSpace(toolResult.Data) != "") {
+			task.Status = "COMPLETED"
+			task.Result = toolResult.Data
+			break
+		}
+
 		// === REFLECT Phase (self-repair on errors) ===
 		if !toolResult.Success && h.config.EnableReflect {
 			reflectMsg := fmt.Sprintf(
