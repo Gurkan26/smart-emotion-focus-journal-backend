@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/agent"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/learning"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/mcp"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/shared/response"
@@ -41,12 +42,17 @@ type Handler struct {
 	wikiMCP         *mcp.DeepWikiMCP
 	mcpSuite        *mcp.MCPServerSuite
 	collector       *learning.Collector
+	harness         *agent.Harness
 	telemetryMu     sync.RWMutex
 	latestTelemetry FineTuneTelemetryDTO
 }
 
 func (h *Handler) SetCollector(c *learning.Collector) {
 	h.collector = c
+}
+
+func (h *Handler) SetHarness(harness *agent.Harness) {
+	h.harness = harness
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
@@ -536,4 +542,37 @@ func (h *Handler) GetPendingLearningData(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	response.JSON(w, http.StatusOK, h.collector.GetPendingInteractions())
+}
+
+// ExecuteAgentTask runs the Agent Harness ReAct loop for a given goal.
+func (h *Handler) ExecuteAgentTask(w http.ResponseWriter, r *http.Request) {
+	if h.harness == nil {
+		response.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Agent harness not initialized"})
+		return
+	}
+
+	type AgentInput struct {
+		Goal   string `json:"goal"`
+		UserID uint   `json:"user_id"`
+	}
+	var input AgentInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Goal == "" {
+		response.JSON(w, http.StatusBadRequest, map[string]string{"error": "Field 'goal' is required"})
+		return
+	}
+	if input.UserID == 0 {
+		input.UserID = 1
+	}
+
+	task := h.harness.Execute(r.Context(), input.UserID, input.Goal)
+	response.JSON(w, http.StatusOK, task)
+}
+
+// GetAgentHistory returns recent completed agent tasks with full trajectory.
+func (h *Handler) GetAgentHistory(w http.ResponseWriter, r *http.Request) {
+	if h.harness == nil {
+		response.JSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+	response.JSON(w, http.StatusOK, h.harness.GetHistory())
 }

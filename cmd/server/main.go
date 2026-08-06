@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	// Infrastructure
+	agentPkg "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/agent"
 	infraAuth "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/auth"
 	adminHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/admin"
 	apimgmtHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/apimanagement"
@@ -24,6 +25,8 @@ import (
 	tenantHandler "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/handler/tenant"
 	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/http/router"
 	infraKafka "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/kafka"
+	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/llm"
+	"github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/mcp"
 	infraWS "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/websocket"
 	pgApimgmt "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/postgres/apimanagement"
 	pgAudit "github.com/gurkanfikretgunak/masterfabric-go/internal/infrastructure/postgres/audit"
@@ -205,6 +208,18 @@ func buildDependencies(
 	jHandler := journalHandler.NewHandler(db)
 	aHandler := adminHandler.NewHandler(db)
 	aHandler.SetCollector(jHandler.GetCollector())
+
+	// --- Agent Harness Setup ---
+	ollamaClient := agentPkg.NewOllamaLLMClient()
+	harness := agentPkg.NewHarness(ollamaClient, agentPkg.DefaultConfig())
+
+	// Register tools: wrap existing components for agent use
+	analyzer := llm.NewAnalyzer()
+	mcpSuite := mcp.NewMCPServerSuite()
+	harness.RegisterTool(agentPkg.NewOptimizePromptTool(analyzer))
+	harness.RegisterTool(agentPkg.NewQueryKnowledgeTool(mcpSuite))
+	aHandler.SetHarness(harness)
+	log.Info("Agent Harness initialized", "tools", 3, "maxIterations", 8)
 
 	deps := router.Dependencies{
 		Logger:             log,

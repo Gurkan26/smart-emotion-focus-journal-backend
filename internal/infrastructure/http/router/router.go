@@ -144,6 +144,8 @@ func New(deps Dependencies) *chi.Mux {
 				r.Get("/admin/learning/stats", deps.AdminHandler.GetLearningStats)
 				r.Post("/admin/learning/flush", deps.AdminHandler.FlushLearningDataset)
 				r.Get("/admin/learning/pending", deps.AdminHandler.GetPendingLearningData)
+				r.Post("/admin/agent/execute", deps.AdminHandler.ExecuteAgentTask)
+				r.Get("/admin/agent/history", deps.AdminHandler.GetAgentHistory)
 			}
 		})
 	}
