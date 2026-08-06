@@ -1219,7 +1219,7 @@ func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
 
 	// Use Agent Harness (ReAct Loop) if registered
 	if h.harness != nil {
-		goal := fmt.Sprintf("Optimize this raw prompt using template '%s': %s", input.Template, input.Prompt)
+		goal := fmt.Sprintf("Act as an expert prompt engineer. Rewrite, expand, and optimize this raw user prompt into a high-quality prompt specification using template '%s'. DO NOT write code or answer the prompt directly! Raw Prompt: %s", input.Template, input.Prompt)
 		if input.CustomInstruction != "" {
 			goal = fmt.Sprintf("%s (Custom Instruction: %s)", goal, input.CustomInstruction)
 		}

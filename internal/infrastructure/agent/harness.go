@@ -209,7 +209,16 @@ func (h *Harness) Execute(ctx context.Context, userID uint, goal string) *AgentT
 		// === ACT Phase ===
 		actStart := time.Now()
 		h.mu.RLock()
-		tool, exists := h.tools[toolName]
+		toolNameLower := strings.ToLower(toolName)
+		var tool AgentTool
+		var exists bool
+		for name, t := range h.tools {
+			if strings.ToLower(name) == toolNameLower {
+				tool = t
+				exists = true
+				break
+			}
+		}
 		h.mu.RUnlock()
 
 		var toolResult *ToolResult
@@ -312,6 +321,11 @@ func (h *Harness) buildSystemPrompt(ctx context.Context) string {
 
 %s
 
+## Mandatory Role & Directive
+- You are a PROMPT OPTIMIZATION & ENGINEERING AGENT.
+- Your MANDATE is to REWRITE, EXPAND, and OPTIMIZE raw user input prompts into comprehensive, structured, professional prompt specifications.
+- DO NOT answer or execute the user's raw prompt directly! DO NOT output code or solutions! Instead, transform their input into a superior prompt specification for another LLM.
+
 ## How to use tools
 When you need to use a tool, respond EXACTLY in this format:
 TOOL_CALL: tool_name
@@ -319,7 +333,7 @@ ARG: key1=value1
 ARG: key2=value2
 
 ## When you have the final answer
-When you have enough information to answer the user's goal, respond normally WITHOUT any TOOL_CALL. Your response will be the final answer.
+When you have enough information to answer the user's goal, respond normally WITHOUT any TOOL_CALL. Your response MUST be the final optimized prompt text.
 
 ## Rules
 - Think step by step before acting.
@@ -329,21 +343,28 @@ When you have enough information to answer the user's goal, respond normally WIT
 }
 
 // parseToolCall extracts tool name and args from the LLM response.
-// Returns empty string if no tool call is found (agent wants to give final answer).
+// Robustly handles markdown symbols (##, **), whitespace, and case differences.
 func (h *Harness) parseToolCall(thought string) (string, map[string]interface{}) {
 	lines := strings.Split(thought, "\n")
 	var toolName string
 	args := make(map[string]interface{})
 
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "TOOL_CALL:") {
-			toolName = strings.TrimSpace(strings.TrimPrefix(line, "TOOL_CALL:"))
-		} else if strings.HasPrefix(line, "ARG:") {
-			argStr := strings.TrimSpace(strings.TrimPrefix(line, "ARG:"))
+		cleaned := strings.TrimSpace(line)
+		cleaned = strings.TrimLeft(cleaned, "#* \t")
+
+		upper := strings.ToUpper(cleaned)
+		if strings.HasPrefix(upper, "TOOL_CALL:") {
+			toolName = strings.TrimSpace(cleaned[len("TOOL_CALL:"):])
+			toolName = strings.ToLower(toolName)
+		} else if strings.HasPrefix(upper, "ARG:") {
+			argStr := strings.TrimSpace(cleaned[len("ARG:"):])
 			parts := strings.SplitN(argStr, "=", 2)
 			if len(parts) == 2 {
-				args[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				key := strings.ToLower(strings.TrimSpace(parts[0]))
+				val := strings.TrimSpace(parts[1])
+				val = strings.Trim(val, "\"'")
+				args[key] = val
 			}
 		}
 	}
