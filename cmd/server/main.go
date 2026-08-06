@@ -212,6 +212,9 @@ func buildDependencies(
 	// --- Agent Harness Setup ---
 	ollamaClient := agentPkg.NewOllamaLLMClient()
 	harness := agentPkg.NewHarness(ollamaClient, agentPkg.DefaultConfig())
+	if db != nil {
+		harness.SetDB(db)
+	}
 
 	// Register tools: wrap existing components for agent use
 	analyzer := llm.NewAnalyzer()
@@ -219,6 +222,7 @@ func buildDependencies(
 	harness.RegisterTool(agentPkg.NewOptimizePromptTool(analyzer))
 	harness.RegisterTool(agentPkg.NewQueryKnowledgeTool(mcpSuite))
 	aHandler.SetHarness(harness)
+	jHandler.SetHarness(harness)
 	log.Info("Agent Harness initialized", "tools", 3, "maxIterations", 8)
 
 	deps := router.Dependencies{

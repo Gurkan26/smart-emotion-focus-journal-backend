@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,6 +93,7 @@ type Harness struct {
 	llm      LLMClient
 	config   HarnessConfig
 	history  []AgentTask // Recent completed tasks
+	db       *pgxpool.Pool
 }
 
 // NewHarness creates a new Agent Harness with the given LLM client and config.
@@ -107,6 +110,12 @@ func NewHarness(llm LLMClient, cfg HarnessConfig) *Harness {
 		config:  cfg,
 		history: make([]AgentTask, 0, 32),
 	}
+}
+
+func (h *Harness) SetDB(db *pgxpool.Pool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.db = db
 }
 
 // RegisterTool adds a tool to the agent's available toolset.
@@ -147,7 +156,7 @@ func (h *Harness) Execute(ctx context.Context, userID uint, goal string) *AgentT
 	fmt.Printf("[AGENT] Starting task %s: %q (max %d iterations, timeout %s)\n",
 		task.ID, goal, h.config.MaxIterations, h.config.Timeout)
 
-	systemPrompt := h.buildSystemPrompt()
+	systemPrompt := h.buildSystemPrompt(taskCtx)
 	messages := []ChatMessage{
 		{Role: "user", Content: fmt.Sprintf("Goal: %s", goal)},
 	}
@@ -289,8 +298,17 @@ func (h *Harness) GetHistory() []AgentTask {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-func (h *Harness) buildSystemPrompt() string {
-	return fmt.Sprintf(`You are an intelligent AI agent with access to tools. Your job is to accomplish the user's goal step by step.
+func (h *Harness) buildSystemPrompt(ctx context.Context) string {
+	basePrompt := "You are MasterFabric AI, an expert prompt engineering specialist and cognitive load analyst."
+	if h.db != nil && ctx != nil {
+		var dbPrompt string
+		err := h.db.QueryRow(ctx, `SELECT system_prompt FROM llm_configs ORDER BY id DESC LIMIT 1`).Scan(&dbPrompt)
+		if err == nil && strings.TrimSpace(dbPrompt) != "" {
+			basePrompt = strings.TrimSpace(dbPrompt)
+		}
+	}
+
+	return fmt.Sprintf(`%s
 
 %s
 
@@ -307,7 +325,7 @@ When you have enough information to answer the user's goal, respond normally WIT
 - Think step by step before acting.
 - Use tools only when necessary.
 - If a tool fails, try a different approach.
-- Always provide a final answer in the user's language.`, h.ListTools())
+- Always provide a final answer in the user's language.`, basePrompt, h.ListTools())
 }
 
 // parseToolCall extracts tool name and args from the LLM response.
