@@ -1217,14 +1217,16 @@ func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
 		input.Template = "accurate"
 	}
 
-	// Run through Agent Harness (ReAct Loop)
+	// Run through Agent Harness (Deterministic Tool Routing)
 	if h.harness != nil {
-		goal := fmt.Sprintf("Act as an expert prompt engineer. Rewrite, expand, and optimize this raw user prompt into a high-quality prompt specification using template '%s'. DO NOT write code or answer the prompt directly! Raw Prompt: %s", input.Template, input.Prompt)
-		if input.CustomInstruction != "" {
-			goal = fmt.Sprintf("%s (Custom Instruction: %s)", goal, input.CustomInstruction)
+		goal := fmt.Sprintf("Optimize prompt using template '%s': %s", input.Template, input.Prompt)
+
+		toolArgs := map[string]interface{}{
+			"prompt":   input.Prompt,
+			"template": input.Template,
 		}
 
-		task := h.harness.Execute(r.Context(), userID, goal)
+		task := h.harness.ExecuteDirect(r.Context(), userID, goal, "optimize_prompt", toolArgs)
 		if task != nil && task.Status == "COMPLETED" && strings.TrimSpace(task.Result) != "" {
 			origTokens := len(input.Prompt)/4 + 1
 			optTokens := len(task.Result)/4 + 1
@@ -1235,9 +1237,7 @@ func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
 
 			var thinkingSteps []string
 			for _, s := range task.Steps {
-				if s.Phase == "THINK" {
-					thinkingSteps = append(thinkingSteps, fmt.Sprintf("[Step %d] %s", s.Index, s.Output))
-				}
+				thinkingSteps = append(thinkingSteps, fmt.Sprintf("[%s] %s", s.Phase, s.Output))
 			}
 			thinkingStr := strings.Join(thinkingSteps, "\n")
 
@@ -1250,7 +1250,7 @@ func (h *Handler) OptimizePrompt(w http.ResponseWriter, r *http.Request) {
 				OriginalTokens:    origTokens,
 				OptimizedTokens:   optTokens,
 				TokenSavingsPct:   savingsPct,
-				Explanation:       fmt.Sprintf("Optimized via ReAct Agent Harness (%d steps, trajectory score: %.2f)", len(task.Steps), task.Score),
+				Explanation:       fmt.Sprintf("Optimized via Agent Harness (%d steps, trajectory score: %.2f)", len(task.Steps), task.Score),
 				Metrics: llm.ExecutionMetrics{
 					LatencyMs:        task.Duration,
 					PromptTokens:     origTokens,

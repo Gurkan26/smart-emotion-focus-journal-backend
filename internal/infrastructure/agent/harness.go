@@ -301,6 +301,104 @@ func (h *Harness) Execute(ctx context.Context, userID uint, goal string) *AgentT
 	return &task
 }
 
+// ExecuteDirect runs a deterministic agent task — directly calls a specific tool
+// without the LLM THINK step. This is used for well-known tasks (like prompt
+// optimization) where we already know which tool to call and with what args.
+// The Harness still logs all [AGENT] steps and records history.
+func (h *Harness) ExecuteDirect(ctx context.Context, userID uint, goal string, toolName string, toolArgs map[string]interface{}) *AgentTask {
+	taskCtx, cancel := context.WithTimeout(ctx, h.config.Timeout)
+	defer cancel()
+
+	task := AgentTask{
+		ID:        fmt.Sprintf("task_%d_%d", userID, time.Now().UnixNano()),
+		UserID:    userID,
+		Goal:      goal,
+		Status:    "RUNNING",
+		Steps:     make([]Step, 0, 4),
+		CreatedAt: time.Now(),
+	}
+
+	fmt.Printf("[AGENT] Starting direct task %s: tool=%s goal=%q\n",
+		task.ID, toolName, truncate(goal, 100))
+
+	// === THINK Phase (deterministic — no LLM call) ===
+	thinkOutput := fmt.Sprintf("Deterministic routing: directly calling tool '%s' with args: prompt=[user input], template=%v", toolName, toolArgs["template"])
+	task.Steps = append(task.Steps, Step{
+		Index: 0, Phase: "THINK",
+		Output:    thinkOutput,
+		LatencyMs: 0,
+		CreatedAt: time.Now(),
+	})
+	fmt.Printf("[AGENT] Step 0 THINK: %s\n", truncate(thinkOutput, 120))
+
+	// === ACT Phase (direct tool execution) ===
+	actStart := time.Now()
+	h.mu.RLock()
+	toolNameLower := strings.ToLower(toolName)
+	var tool AgentTool
+	var exists bool
+	for name, t := range h.tools {
+		if strings.ToLower(name) == toolNameLower {
+			tool = t
+			exists = true
+			break
+		}
+	}
+	h.mu.RUnlock()
+
+	var toolResult *ToolResult
+	if !exists {
+		toolResult = &ToolResult{
+			Success: false,
+			Error:   fmt.Sprintf("Unknown tool: %s. Available: %s", toolName, h.toolNames()),
+		}
+	} else {
+		var err error
+		toolResult, err = tool.Execute(taskCtx, toolArgs)
+		if err != nil {
+			toolResult = &ToolResult{Success: false, Error: err.Error()}
+		}
+	}
+
+	task.Steps = append(task.Steps, Step{
+		Index: 1, Phase: "ACT",
+		ToolName:  toolName,
+		Input:     toolArgs,
+		Output:    truncate(toolResult.Data, 500),
+		LatencyMs: time.Since(actStart).Milliseconds(),
+		CreatedAt: time.Now(),
+	})
+	fmt.Printf("[AGENT] Step 1 ACT: tool=%s success=%v latency=%dms\n", toolName, toolResult.Success, time.Since(actStart).Milliseconds())
+
+	// === OBSERVE Phase ===
+	var observation string
+	if toolResult.Success {
+		observation = fmt.Sprintf("Tool '%s' returned optimized result (%d chars)", toolName, len(toolResult.Data))
+		task.Status = "COMPLETED"
+		task.Result = toolResult.Data
+	} else {
+		observation = fmt.Sprintf("Tool '%s' FAILED: %s", toolName, toolResult.Error)
+		task.Status = "FAILED"
+		task.Result = toolResult.Error
+	}
+
+	task.Steps = append(task.Steps, Step{
+		Index: 2, Phase: "OBSERVE",
+		Output:    observation,
+		CreatedAt: time.Now(),
+	})
+	fmt.Printf("[AGENT] Step 2 OBSERVE: %s\n", truncate(observation, 120))
+
+	task.Duration = time.Since(task.CreatedAt).Milliseconds()
+	task.Score = h.evaluateTrajectory(task)
+	h.recordTask(task)
+
+	fmt.Printf("[AGENT] Task %s completed: status=%s steps=%d duration=%dms score=%.2f\n",
+		task.ID, task.Status, len(task.Steps), task.Duration, task.Score)
+
+	return &task
+}
+
 // GetHistory returns recent completed tasks.
 func (h *Harness) GetHistory() []AgentTask {
 	h.mu.RLock()
